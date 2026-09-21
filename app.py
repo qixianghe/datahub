@@ -11,7 +11,7 @@ from utils.columns import sanitize_columns
 from utils import gps_dashboard as gpsd
 
 try:
-    from st_aggrid import AgGrid, GridOptionsBuilder
+    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 
     HAS_AGGRID = True
 except ImportError:
@@ -908,12 +908,47 @@ elif nav_section == "Performance" and nav_page == "Match History":
                     gb.configure_default_column(resizable=True, sortable=True, filter=True)
                     if "Result" in display_df.columns:
                         gb.configure_column("Result", cellStyle={"fontWeight": "700"})
+
+                    # Always show these headers in full (wrapped onto a
+                    # second line if needed) rather than letting
+                    # fit_columns_on_grid_load's auto-sizing truncate them.
+                    for full_header_col in ("Opposition", "Participation Status", "Active Duration (min)"):
+                        if full_header_col in display_df.columns:
+                            gb.configure_column(
+                                full_header_col, wrapHeaderText=True, autoHeaderHeight=True
+                            )
+
+                    # Shade "Active Duration (min)" light-to-dark green
+                    # across a fixed 0-90 range (values are clamped to
+                    # that range for the colour, not for the number shown).
+                    if "Active Duration (min)" in display_df.columns:
+                        duration_cell_style = JsCode(
+                            """
+                            function(params) {
+                                var v = Number(params.value);
+                                if (params.value === null || params.value === undefined || isNaN(v)) {
+                                    return {};
+                                }
+                                var t = Math.max(0, Math.min(90, v)) / 90;
+                                var r = Math.round(232 + (27 - 232) * t);
+                                var g = Math.round(245 + (94 - 245) * t);
+                                var b = Math.round(233 + (32 - 233) * t);
+                                return {
+                                    backgroundColor: 'rgb(' + r + ',' + g + ',' + b + ')',
+                                    color: t > 0.55 ? 'white' : 'black'
+                                };
+                            }
+                            """
+                        )
+                        gb.configure_column("Active Duration (min)", cellStyle=duration_cell_style)
+
                     grid_options = gb.build()
                     AgGrid(
                         display_df,
                         gridOptions=grid_options,
                         fit_columns_on_grid_load=True,
                         theme="balham",
+                        allow_unsafe_jscode=True,
                     )
                 else:
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
@@ -1770,6 +1805,7 @@ else:  # nav_section == "Medical" and nav_page == "Player Availability"
     for i, (position, player) in enumerate(visible_players):
         name = player["name"]
         age = player["age"]
+        age_display = round(age) if isinstance(age, (int, float)) else age
         saved = current_data.get(name, {})
         saved_status = saved.get("status", "Available")
         saved_notes = saved.get("medical_notes", "")
@@ -1789,7 +1825,7 @@ else:  # nav_section == "Medical" and nav_page == "Player Availability"
                     f"<div style='padding-right:64px; margin-bottom:6px;'><b>{name}</b></div>",
                     unsafe_allow_html=True,
                 )
-                st.caption(f"Age {age}")
+                st.caption(f"Age {age_display}")
 
                 if not st.session_state[edit_key]:
                     # ---- View-only mode ----
