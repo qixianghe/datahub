@@ -1,0 +1,6 @@
+streamlit>=1.37
+pandas>=2.0
+supabase>=2.7
+altair>=5.0
+numpy>=1.24
+streamlit-aggrid>=1.2
