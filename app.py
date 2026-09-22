@@ -1,4 +1,5 @@
 import base64
+import html
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -251,11 +252,17 @@ GPS_DASHBOARD_COLUMN_MAP = {
 PROFILE_PIC_DIR = Path(__file__).parent / "utils" / "profilepic"
 
 
+@st.cache_data
 def load_local_avatar_data_uri(filename: str):
     """Reads utils/profilepic/<filename> and returns a base64 data URI, or
     None if the file doesn't exist. Data URIs work everywhere (local dev,
     Streamlit Cloud, etc.) since the browser never needs direct filesystem
     access — the image bytes are embedded right in the HTML.
+
+    Cached since the same file's bytes/encoding never change between
+    reruns — avoids re-reading and re-encoding every player's photo from
+    disk on every single page rerun (a big chunk of the old "everything
+    reloads" lag, on top of the per-card fragments above).
     """
     path = PROFILE_PIC_DIR / filename
     if not path.exists():
@@ -521,9 +528,9 @@ NAV_STRUCTURE = {
 }
 
 if "nav_section" not in st.session_state:
-    st.session_state.nav_section = "Performance"
+    st.session_state.nav_section = "Medical"
 if "nav_page" not in st.session_state:
-    st.session_state.nav_page = "Upload"
+    st.session_state.nav_page = "Player Availability"
 
 st.sidebar.title("Navigation")
 for section, pages in NAV_STRUCTURE.items():
@@ -1638,7 +1645,7 @@ else:  # nav_section == "Medical" and nav_page == "Player Availability"
     st.markdown(
         """
         <style>
-        div[data-testid="stVerticalBlockBorderWrapper"] { padding: 0.35rem 0.6rem !important; min-height: 260px; }
+        div[data-testid="stVerticalBlockBorderWrapper"] { padding: 0.35rem 0.6rem !important; min-height: 330px; }
         div[data-testid="stVerticalBlock"] { gap: 0.25rem; }
         </style>
         """,
@@ -1720,21 +1727,29 @@ else:  # nav_section == "Medical" and nav_page == "Player Availability"
         bucket = gk_counts if position == "Goalkeepers" else outfield_counts
         bucket[summary_status] += 1
 
-    def _mini_pill(status, count):
-        color = STATUS_PILL_COLORS[status]
+    def _stat_card(status, count):
+        """One color-shaded mini stat card (count + label), reusing the
+        same background/border tint as the player cards below for that
+        status, so the summary visually matches the cards it's counting."""
+        colors = STATUS_CARD_COLORS[status]
+        label = STATUS_CARD_LABELS.get(status, status)
         return (
-            f"<span style='margin-right:18px; display:inline-flex; align-items:center; gap:6px;'>"
-            f"<span style='background-color:{color}; color:#ffffff; "
-            f"padding:2px 10px; border-radius:10px; font-size:0.9rem; "
-            f"font-weight:600;'>{status}</span>"
-            f"<span style='background-color:{color}; color:#ffffff; width:26px; "
-            f"height:26px; border-radius:50%; display:inline-flex; align-items:center; "
-            f"justify-content:center; font-size:0.85rem; font-weight:700;'>{count}</span>"
-            f"</span>"
+            f"<div style='flex:1; min-width:76px; background-color:{colors['bg']}; "
+            f"border:1px solid {colors['border']}; border-radius:10px; "
+            f"padding:8px 10px; text-align:center;'>"
+            f"<div style='font-size:1.5rem; font-weight:700; color:{colors['border']}; "
+            f"line-height:1.2;'>{count}</div>"
+            f"<div style='font-size:0.7rem; font-weight:600; color:#555555; "
+            f"line-height:1.2;'>{label}</div>"
+            f"</div>"
         )
 
-    def _counts_line(counts):
-        return "".join(_mini_pill(status, counts[status]) for status in SUMMARY_STATUS_ORDER)
+    def _stat_row(counts):
+        return (
+            "<div style='display:flex; gap:8px; margin-bottom:22px;'>"
+            + "".join(_stat_card(status, counts[status]) for status in SUMMARY_STATUS_ORDER)
+            + "</div>"
+        )
 
     # ---- Overall availability % (Available [+ Recurring Medical Attention, already merged above] + Modified) ----
     # Computed over the FULL squad (flat_players), not visible_players —
@@ -1757,17 +1772,19 @@ else:  # nav_section == "Medical" and nav_page == "Player Availability"
             return STATUS_PILL_COLORS["Available - Modified"]
         return STATUS_PILL_COLORS["Unavailable"]
 
-    sum_col1, sum_col2, pct_col = st.columns([2, 2, 1])
+    sum_col1, sum_col2, pct_col = st.columns([2, 2, 1], gap="large")
     with sum_col1:
         st.markdown(
-            f"<div style='font-size:1.05rem;'><b>Goalkeepers</b> &nbsp; {_counts_line(gk_counts)}</div>",
+            "<div style='font-size:1.05rem; font-weight:600; line-height:1.6; margin-bottom:14px;'>Goalkeepers</div>",
             unsafe_allow_html=True,
         )
+        st.markdown(_stat_row(gk_counts), unsafe_allow_html=True)
     with sum_col2:
         st.markdown(
-            f"<div style='font-size:1.05rem;'><b>Outfielders</b> &nbsp; {_counts_line(outfield_counts)}</div>",
+            "<div style='font-size:1.05rem; font-weight:600; line-height:1.6; margin-bottom:14px;'>Outfielders</div>",
             unsafe_allow_html=True,
         )
+        st.markdown(_stat_row(outfield_counts), unsafe_allow_html=True)
     with pct_col:
         badge_color = _pct_badge_color(availability_pct)
         st.markdown(
@@ -1800,9 +1817,41 @@ else:  # nav_section == "Medical" and nav_page == "Player Availability"
         )
     st.markdown(f"<style>{''.join(card_css_rules)}</style>", unsafe_allow_html=True)
 
-    columns = st.columns(CARD_GRID_COLUMNS)
+    def _notes_block(label, text, margin_bottom=6):
+        """Medical/modification notes line, CSS-clamped to exactly two
+        lines (with an ellipsis if longer) so every card reserves the
+        same amount of space here regardless of how much text is in it —
+        short notes leave blank space instead of collapsing to one line,
+        long notes get truncated at two lines instead of stretching the
+        card taller than its neighbours. line-height is kept tight (the
+        spacing wanted is *between* the two note blocks, via
+        margin_bottom, not between the wrapped lines within one)."""
+        shown = text if text else f"No {label.lower()} notes"
+        escaped = html.escape(shown)
+        return (
+            f"<div style='font-size:0.85rem; color:#808495; line-height:1.1em; "
+            f"min-height:2.2em; margin-bottom:{margin_bottom}px; display:-webkit-box; "
+            f"-webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;'>"
+            f"<b>{label}:</b> {escaped}</div>"
+        )
 
-    for i, (position, player) in enumerate(visible_players):
+    @st.fragment
+    def _render_availability_card(slot, position, player):
+        """One player's card, as its own fragment so opening/closing the
+        edit form (or cancelling out of it) only reruns this single card
+        instead of the whole page — the counts/percentage above and every
+        other card stay untouched and don't get visibly redrawn.
+
+        Rendered into an st.empty() slot (rather than writing straight
+        into the outer column) because that slot is what Streamlit clears
+        and replaces on each fragment rerun; a plain column/container
+        created outside the fragment would otherwise accumulate elements
+        instead of replacing them.
+
+        Saving does trigger a normal full-page rerun (st.rerun() with its
+        default scope="app"), since a save is the one case where the
+        counts/percentage above genuinely need to reflect the change.
+        """
         name = player["name"]
         age = player["age"]
         age_display = round(age) if isinstance(age, (int, float)) else age
@@ -1817,112 +1866,109 @@ else:  # nav_section == "Medical" and nav_page == "Player Availability"
 
         card_key = slugify(f"card_{avail_team}_{name}")
 
-        with columns[i % CARD_GRID_COLUMNS]:
-            with st.container(border=True, key=card_key):
-                st.markdown(render_avatar_html(player, POSITION_COLORS[position]), unsafe_allow_html=True)
-                pos_color = POSITION_COLORS[position]
+        with slot.container(border=True, key=card_key):
+            st.markdown(render_avatar_html(player, POSITION_COLORS[position]), unsafe_allow_html=True)
+            pos_color = POSITION_COLORS[position]
+            st.markdown(
+                f"<div style='padding-right:64px; margin-bottom:6px;'><b>{name}</b></div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(f"Age {age_display}")
+
+            if not st.session_state[edit_key]:
+                # ---- View-only mode ----
+                pill_color = STATUS_PILL_COLORS[saved_status]
+                pill_label = STATUS_CARD_LABELS.get(saved_status, saved_status)
                 st.markdown(
-                    f"<div style='padding-right:64px; margin-bottom:6px;'><b>{name}</b></div>",
+                    f"<div style='display:flex; align-items:center; gap:6px; margin-bottom:22px;'>"
+                    f"<div style='width:22px; height:22px; border-radius:50%; "
+                    f"background-color:{pos_color}; color:#ffffff; display:flex; "
+                    f"align-items:center; justify-content:center; font-size:0.65rem; "
+                    f"font-weight:700; flex-shrink:0;'>{POSITION_ABBR[position]}</div>"
+                    f"<span style='background-color:{pill_color}; color:#ffffff; "
+                    f"padding:2px 10px; border-radius:10px; font-size:0.75rem; "
+                    f"font-weight:600; display:inline-block;'>{pill_label}</span>"
+                    f"</div>",
                     unsafe_allow_html=True,
                 )
-                st.caption(f"Age {age_display}")
-
-                if not st.session_state[edit_key]:
-                    # ---- View-only mode ----
-                    pill_color = STATUS_PILL_COLORS[saved_status]
-                    pill_label = STATUS_CARD_LABELS.get(saved_status, saved_status)
-                    st.markdown(
-                        f"<div style='display:flex; align-items:center; gap:6px; margin-bottom:16px;'>"
-                        f"<div style='width:22px; height:22px; border-radius:50%; "
-                        f"background-color:{pos_color}; color:#ffffff; display:flex; "
-                        f"align-items:center; justify-content:center; font-size:0.65rem; "
-                        f"font-weight:700; flex-shrink:0;'>{POSITION_ABBR[position]}</div>"
-                        f"<span style='background-color:{pill_color}; color:#ffffff; "
-                        f"padding:2px 10px; border-radius:10px; font-size:0.75rem; "
-                        f"font-weight:600; display:inline-block;'>{pill_label}</span>"
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
-                    notes_preview = saved_notes if saved_notes else "No medical notes"
-                    st.caption(
-                        "Medical: " + notes_preview[:70]
-                        + ("…" if len(notes_preview) > 70 else "")
-                    )
-                    mod_notes_preview = saved_mod_notes if saved_mod_notes else "No modification notes"
-                    st.caption(
-                        "Mods: " + mod_notes_preview[:70]
-                        + ("…" if len(mod_notes_preview) > 70 else "")
-                    )
-                    modify_col, history_col = st.columns([2, 1])
-                    with modify_col:
-                        if st.button("✎", key=f"modify_{avail_team}_{name}", use_container_width=True, help="Modify"):
-                            st.session_state[edit_key] = True
-                            st.rerun()
-                    with history_col:
-                        with st.popover("⏱", use_container_width=True, help="Recent session history"):
-                            st.caption("Last 5 sessions")
-                            history = get_recent_session_history(avail_team, name)
-                            if isinstance(history, str):
-                                st.caption(history)
-                            else:
-                                for line in history:
-                                    st.markdown(f"- {line}")
-                else:
-                    # ---- Edit mode ----
-                    new_status = st.pills(
-                        label=name,
-                        options=STATUS_OPTIONS,
-                        format_func=lambda s: STATUS_DISPLAY[s],
-                        selection_mode="single",
-                        default=saved_status,
-                        key=f"pill_{avail_team}_{name}",
-                        label_visibility="collapsed",
-                    )
-                    new_notes = st.text_area(
-                        "Medical notes",
-                        value=saved_notes,
-                        key=f"notes_{avail_team}_{name}",
-                        height=70,
-                        label_visibility="collapsed",
-                        placeholder="Medical notes...",
-                    )
-                    new_mod_notes = st.text_area(
-                        "Modification notes",
-                        value=saved_mod_notes,
-                        key=f"mod_notes_{avail_team}_{name}",
-                        height=70,
-                        label_visibility="collapsed",
-                        placeholder="Modification notes...",
-                    )
-                    save_col, cancel_col = st.columns(2)
-                    with save_col:
-                        if st.button("Save", key=f"save_{avail_team}_{name}", type="primary", use_container_width=True):
-                            record = {
-                                "team": avail_team,
-                                "player": name,
-                                "position": position,
-                                "status": new_status or saved_status,
-                                "medical_notes": new_notes,
-                                "modification_notes": new_mod_notes,
-                                "recorded_at": datetime.now(timezone.utc).isoformat(),
-                            }
-                            try:
-                                write_availability([record])
-                                get_current_player_data.clear()
-                                st.session_state[edit_key] = False
-                                st.rerun()
-                            except Exception as e:
-                                st.error(
-                                    f"Save failed: {e}. If the table doesn't "
-                                    "exist yet, run schema_availability.sql "
-                                    "(and migrations/001_add_medical_notes.sql, "
-                                    "migrations/002_add_modification_notes.sql "
-                                    "if it was created before notes support)."
-                                )
-                    with cancel_col:
-                        if st.button("Cancel", key=f"cancel_{avail_team}_{name}", use_container_width=True):
+                st.markdown(_notes_block("Medical", saved_notes, margin_bottom=14), unsafe_allow_html=True)
+                st.markdown(_notes_block("Mods", saved_mod_notes, margin_bottom=18), unsafe_allow_html=True)
+                modify_col, history_col = st.columns([2, 1])
+                with modify_col:
+                    if st.button("✎", key=f"modify_{avail_team}_{name}", use_container_width=True, help="Modify"):
+                        st.session_state[edit_key] = True
+                        st.rerun(scope="fragment")
+                with history_col:
+                    with st.popover("⏱", use_container_width=True, help="Recent session history"):
+                        st.caption("Last 5 sessions")
+                        history = get_recent_session_history(avail_team, name)
+                        if isinstance(history, str):
+                            st.caption(history)
+                        else:
+                            for line in history:
+                                st.markdown(f"- {line}")
+            else:
+                # ---- Edit mode ----
+                new_status = st.pills(
+                    label=name,
+                    options=STATUS_OPTIONS,
+                    format_func=lambda s: STATUS_DISPLAY[s],
+                    selection_mode="single",
+                    default=saved_status,
+                    key=f"pill_{avail_team}_{name}",
+                    label_visibility="collapsed",
+                )
+                new_notes = st.text_area(
+                    "Medical notes",
+                    value=saved_notes,
+                    key=f"notes_{avail_team}_{name}",
+                    height=70,
+                    label_visibility="collapsed",
+                    placeholder="Medical notes...",
+                )
+                new_mod_notes = st.text_area(
+                    "Modification notes",
+                    value=saved_mod_notes,
+                    key=f"mod_notes_{avail_team}_{name}",
+                    height=70,
+                    label_visibility="collapsed",
+                    placeholder="Modification notes...",
+                )
+                save_col, cancel_col = st.columns(2)
+                with save_col:
+                    if st.button("Save", key=f"save_{avail_team}_{name}", type="primary", use_container_width=True):
+                        record = {
+                            "team": avail_team,
+                            "player": name,
+                            "position": position,
+                            "status": new_status or saved_status,
+                            "medical_notes": new_notes,
+                            "modification_notes": new_mod_notes,
+                            "recorded_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        try:
+                            write_availability([record])
+                            get_current_player_data.clear()
                             st.session_state[edit_key] = False
                             st.rerun()
+                        except Exception as e:
+                            st.error(
+                                f"Save failed: {e}. If the table doesn't "
+                                "exist yet, run schema_availability.sql "
+                                "(and migrations/001_add_medical_notes.sql, "
+                                "migrations/002_add_modification_notes.sql "
+                                "if it was created before notes support)."
+                            )
+                with cancel_col:
+                    if st.button("Cancel", key=f"cancel_{avail_team}_{name}", use_container_width=True):
+                        st.session_state[edit_key] = False
+                        st.rerun(scope="fragment")
+
+    columns = st.columns(CARD_GRID_COLUMNS)
+
+    for i, (position, player) in enumerate(visible_players):
+        slot = columns[i % CARD_GRID_COLUMNS].empty()
+        _render_availability_card(slot, position, player)
 
     # ---- Player filter control ----
     # Placed at the very bottom of the page, below every card, so it
