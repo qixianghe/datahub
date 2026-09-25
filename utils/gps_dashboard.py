@@ -209,7 +209,77 @@ def render_match_header(match_row):
         st.markdown(_team_badge_html(away_team), unsafe_allow_html=True)
 
 
-def build_matrix_chart(df, raw_df=None, window_labels=None, row_height=26, bar_width=170, sort_by="Game Minutes (mins)"):
+def _single_metric_chart(long_df_subset, tooltip_fields, player_order, chart_height, show_y_labels):
+    """One metric's bar+label chart as its own top-level Altair spec (not
+    faceted). Vega-Lite's "container" width sizing only reliably works on
+    a single view — a faceted or concatenated chart can't be resized to
+    fill its parent the way Streamlit's use_container_width expects — so
+    each metric gets its own chart here and they're placed side by side
+    in Streamlit columns instead of Altair facet columns. Player-name
+    labels are only drawn on the first (leftmost) chart, matching how the
+    old shared-axis facet looked."""
+    long_df_subset = long_df_subset.copy()
+
+    # Vega-Lite can't measure rendered text width to decide layout, so
+    # this approximates "does the label fit inside the bar": a label
+    # needs roughly this fraction of the metric's own max value to have
+    # enough bar length behind it, scaling with how many characters the
+    # label has. Bars clearing that threshold get the label inside at
+    # the base; shorter bars get it just past the bar's end instead.
+    domain_max = long_df_subset["Value"].max()
+    if pd.isna(domain_max) or domain_max <= 0:
+        domain_max = 1.0
+    needed_fraction = (long_df_subset["Label"].str.len() * 0.045).clip(lower=0.18, upper=0.75)
+    long_df_subset["LabelInside"] = (long_df_subset["Value"] / domain_max) >= needed_fraction
+
+    base = alt.Chart(long_df_subset).encode(
+        y=alt.Y(
+            "Player Name:N",
+            sort=player_order,
+            title=None,
+            axis=alt.Axis(labels=show_y_labels, ticks=show_y_labels),
+        ),
+    )
+    bars = base.mark_bar(cornerRadiusEnd=5).encode(
+        x=alt.X("Value:Q", title=None, axis=alt.Axis(labels=False, ticks=False, grid=True)),
+        color=alt.Color("Value:Q", scale=alt.Scale(scheme="blues"), legend=None),
+        tooltip=tooltip_fields,
+    )
+    labels_inside = base.transform_filter(alt.datum.LabelInside).mark_text(
+        align="left", baseline="middle", fontSize=18, fontWeight="bold", color="#ffffff"
+    ).encode(
+        x=alt.value(6),
+        text=alt.Text("Label:N"),
+        tooltip=tooltip_fields,
+    )
+    labels_outside = base.transform_filter(alt.datum.LabelInside == False).mark_text(
+        align="left", baseline="middle", dx=4, fontSize=18, color="#333333"
+    ).encode(
+        x=alt.X("Value:Q"),
+        text=alt.Text("Label:N"),
+        tooltip=tooltip_fields,
+    )
+    return (
+        (bars + labels_inside + labels_outside)
+        .properties(height=chart_height, width="container")
+        .configure_view(strokeWidth=0)
+    )
+
+
+def render_matrix_chart(df, raw_df=None, window_labels=None, row_height=26, sort_by="Game Minutes (mins)"):
+    """Render the Team Overview bar-chart grid directly (one Streamlit
+    column per metric, each holding its own full-width chart — see
+    _single_metric_chart for why). Players with no recorded Total
+    Distance for this match (0 or missing — i.e. an unused sub, not a
+    real 0 worth graphing) are dropped from every one of these bar
+    graphs first."""
+    if "Total Distance (m)" in df.columns:
+        df = df[df["Total Distance (m)"].fillna(0) != 0].copy()
+
+    if df.empty:
+        st.info("No player data with recorded distance for this match.")
+        return
+
     player_order = df.sort_values(sort_by, ascending=False)["Player Name"].tolist()
     metric_order = [METRIC_LABELS[m] for m in METRIC_COLUMNS]
     max_speed_label = METRIC_LABELS["Max Speed (km/h)"]
@@ -254,30 +324,30 @@ def build_matrix_chart(df, raw_df=None, window_labels=None, row_height=26, bar_w
 
     chart_height = max(240, row_height * df["Player Name"].nunique())
 
-    base = alt.Chart(long_df).encode(
-        y=alt.Y("Player Name:N", sort=player_order, title=None),
-    )
-    bars = base.mark_bar().encode(
-        x=alt.X("Value:Q", title=None, axis=alt.Axis(labels=False, ticks=False, grid=True)),
-        color=alt.Color("Value:Q", scale=alt.Scale(scheme="blues"), legend=None),
-        tooltip=tooltip_fields,
-    )
-    labels = base.mark_text(align="left", baseline="middle", dx=4, fontSize=13, color="#333333").encode(
-        x=alt.X("Value:Q"),
-        text=alt.Text("Label:N"),
-        tooltip=tooltip_fields,
-    )
-    layer = (bars + labels).properties(height=chart_height, width=bar_width)
+    # Relative column widths: the bar-range metrics (distances, actions)
+    # read more easily with more room, while Max Speed and Game Minutes —
+    # much narrower value ranges — stay legible in a slimmer column.
+    METRIC_COLUMN_WEIGHTS = {
+        "Total Distance": 1.9,
+        "High Speed Running": 1.3,
+        "Sprint Distance": 1.3,
+        "High Intensity Actions": 1.3,
+        "High Intensity Distance": 1.3,
+        "Max Speed": 0.7,
+        "Game Minutes": 0.7,
+    }
 
-    return (
-        layer.facet(
-            column=alt.Column(
-                "Metric:N",
-                sort=metric_order,
-                title=None,
-                header=alt.Header(labelFontWeight="bold", labelFontSize=12, labelPadding=6),
+    metrics_present = [lbl for lbl in metric_order if lbl in set(long_df["Metric"])]
+    columns = st.columns([METRIC_COLUMN_WEIGHTS.get(lbl, 1.0) for lbl in metrics_present])
+    for i, (col, metric_label) in enumerate(zip(columns, metrics_present)):
+        subset = long_df[long_df["Metric"] == metric_label]
+        with col:
+            st.markdown(
+                f"<div style='text-align:center; font-weight:700; font-size:0.75rem; "
+                f"margin-bottom:6px;'>{metric_label}</div>",
+                unsafe_allow_html=True,
             )
-        )
-        .resolve_scale(x="independent", color="independent")
-        .configure_view(strokeWidth=0)
-    )
+            chart = _single_metric_chart(
+                subset, tooltip_fields, player_order, chart_height, show_y_labels=(i == 0)
+            )
+            st.altair_chart(chart, use_container_width=True)
