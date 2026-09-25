@@ -98,15 +98,21 @@ def team_per90(df, metric):
 # Any team not listed here (or any name that doesn't normalize to a match)
 # falls back to the colored-initials badge below.
 TEAM_LOGOS = {
-    "hougang united": "https://placehold.co/64x64?text=HUFC",
-    "brunei dpmm": "https://placehold.co/64x64?text=DPMM",
-    "albirex niigata": "https://placehold.co/64x64?text=ALB",
-    "jurong": "https://placehold.co/64x64?text=FCJ",
-    "geylang international": "https://placehold.co/64x64?text=GIFC",
-    "tanjong pagar united": "https://placehold.co/64x64?text=TPU",
-    "balestier khalsa": "https://placehold.co/64x64?text=BKFC",
-    "tampines rovers": "https://placehold.co/64x64?text=TRFC",
-    "young lions": "https://placehold.co/64x64?text=YL",
+    "hougang united": "https://assets.football-logos.cc/logos/singapore/512x512/hougang-united.c90f956a.png",
+    "brunei dpmm": "https://assets.football-logos.cc/logos/malaysia/512x512/dpmm-fc.6ede0521.png",
+    "albirex niigata": "https://assets.football-logos.cc/logos/japan/512x512/albirex-niigata.c76b3101.png",
+    "fc jurong": "https://assets.football-logos.cc/logos/singapore/512x512/fc-jurong.e7e6c333.png",
+    "geylang international": "https://geylang.football/wp-content/uploads/2025/06/GeylangInternationalFC_GIFC_Logo.webp",
+    "tanjong pagar united": "https://assets.football-logos.cc/logos/singapore/512x512/tanjong-pagar-united.4c2ca0dc.png",
+    "balestier khalsa": "https://assets.football-logos.cc/logos/singapore/512x512/balestier-khalsa.70b455b9.png",
+    "tampines rovers": "https://assets.football-logos.cc/logos/singapore/512x512/tampines-rovers.72d8e682.png",
+    "young lions": "https://assets.football-logos.cc/logos/singapore/512x512/young-lions.18f71a8e.png",
+    "lion city sailors":"https://upload.wikimedia.org/wikipedia/en/e/e3/Lion_City_Sailors_FC_logo.svg",
+    "bg pathum united" : "https://assets.football-logos.cc/logos/thailand/512x512/bg-pathum-united.d5f144eb.png",
+    "adelaide united" : "https://assets.football-logos.cc/logos/australia/512x512/adelaide-united.e09ecd91.png",
+    "tai po": "https://assets.football-logos.cc/logos/hong-kong/512x512/tai-po.8e42ef90.png",
+    "JDT" : "https://assets.football-logos.cc/logos/malaysia/512x512/johor-darul-tazim.6930484d.png",
+    "bangkok united" : "https://assets.football-logos.cc/logos/thailand/512x512/true-bangkok-united.d7b3629c.png"
 }
 
 
