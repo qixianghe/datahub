@@ -649,11 +649,58 @@ if nav_section == "Performance" and nav_page == "Upload":
 
 
 elif nav_section == "Performance" and nav_page == "GPS Match Dashboard":
-    # Keep the dashboard selectors together in one row.
-    filter_col1, filter_col2 = st.columns([1, 2])
+    # Print / "Save as PDF": only the scoreline, Team Data Summary and Team
+    # Overview sections (each wrapped in its own st.container(key=...)
+    # below) stay visible when the page is printed from the browser;
+    # everything else on this page — selectors, sidebar, Streamlit chrome —
+    # is hidden. visibility (not display) is used on the wrapping
+    # containers so their contents can still opt back in, while the
+    # selector row is simply removed with display:none since nothing
+    # inside it needs to print.
+    st.markdown(
+        """
+        <style>
+        @media print {
+            section[data-testid="stSidebar"],
+            header[data-testid="stHeader"],
+            div[data-testid="stToolbar"],
+            div[data-testid="stDecoration"],
+            #MainMenu,
+            footer {
+                display: none !important;
+            }
+            .st-key-print_hide_filters {
+                display: none !important;
+            }
+            /* The Team Overview bar charts size themselves to their
+               column via a ResizeObserver, which doesn't refire for
+               print — so on-screen they fill the column, but in print
+               they keep whatever pixel width they last rendered at on
+               screen. Forcing the chart's SVG to 100% width (with
+               height:auto to keep it undistorted) makes it fill the
+               column in print too. */
+            .st-key-print_team_overview [data-testid="stVegaLiteChart"],
+            .st-key-print_team_overview .vega-embed {
+                width: 100% !important;
+            }
+            .st-key-print_team_overview [data-testid="stVegaLiteChart"] svg,
+            .st-key-print_team_overview .vega-embed svg,
+            .st-key-print_team_overview .vega-embed canvas {
+                width: 100% !important;
+                height: auto !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    with filter_col1:
-        gps_team = st.selectbox("Team", TEAMS, key="gps_dash_team")
+    # Keep the dashboard selectors together in one row (hidden when printing).
+    with st.container(key="print_hide_filters"):
+        filter_col1, filter_col2 = st.columns([1, 2])
+
+        with filter_col1:
+            gps_team = st.selectbox("Team", TEAMS, key="gps_dash_team")
 
     try:
         raw = read_table("gps_session_data")
@@ -696,46 +743,76 @@ elif nav_section == "Performance" and nav_page == "GPS Match Dashboard":
             # Add visual breathing room between the selectors and scoreline.
             st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
 
-            gpsd.render_match_header(selected_df.iloc[0])
+            with st.container(key="print_scoreline"):
+                gpsd.render_match_header(selected_df.iloc[0])
 
             # Greater breathing room between the scoreline and the summary section.
             st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
 
-            st.subheader("Team Data Summary")
-            summary_cols = st.columns(len(gpsd.SUMMARY_METRICS))
-            historical_df = raw[raw[gpsd.MATCH_LABEL_COL] != selected_match_label] if has_multiple_matches else None
-            for col, metric in zip(summary_cols, gpsd.SUMMARY_METRICS):
-                selected_val = gpsd.team_per90(selected_df, metric)
-                delta_text = None
-                if historical_df is not None and not historical_df.empty:
-                    hist_val = gpsd.team_per90(historical_df, metric)
-                    if hist_val:
-                        diff = selected_val - hist_val
-                        pct = diff / hist_val * 100
-                        delta_text = f"{diff:+,.1f} ({pct:+.1f}%)"
-                col.metric(
-                    gpsd.METRIC_LABELS[metric],
-                    f"{selected_val:,.1f}",
-                    delta=delta_text,
-                    help=f"Team per-90 rate — {metric} (selected match vs. all other matches)",
+            with st.container(key="print_team_summary"):
+                st.subheader("Team Data Summary")
+                historical_df = raw[raw[gpsd.MATCH_LABEL_COL] != selected_match_label] if has_multiple_matches else None
+
+                # One connected strip of cards (shared border, no gaps
+                # between them) rather than separate st.metric widgets.
+                card_html_parts = []
+                for i, metric in enumerate(gpsd.SUMMARY_METRICS):
+                    selected_val = gpsd.team_per90(selected_df, metric)
+                    label = html.escape(gpsd.METRIC_LABELS[metric])
+
+                    delta_html = ""
+                    if historical_df is not None and not historical_df.empty:
+                        hist_val = gpsd.team_per90(historical_df, metric)
+                        if hist_val:
+                            diff = selected_val - hist_val
+                            pct = diff / hist_val * 100
+                            delta_color = "#2e7d32" if diff >= 0 else "#c62828"
+                            arrow = "▲" if diff >= 0 else "▼"
+                            delta_html = (
+                                f"<div style='font-size:1.05rem; font-weight:600; "
+                                f"color:{delta_color}; margin-top:3px;'>{arrow} "
+                                f"{diff:+,.1f} ({pct:+.1f}%)</div>"
+                            )
+
+                    unit_suffix = "" if metric == "High Intensity Actions" else " m"
+
+                    border_style = (
+                        "" if i == len(gpsd.SUMMARY_METRICS) - 1 else "border-right:1px solid #e2e2e2;"
+                    )
+                    card_html_parts.append(
+                        f"<div style='flex:1; min-width:0; padding:14px 10px; text-align:center; "
+                        f"{border_style}' title='Team per-90 rate — {label} "
+                        f"(selected match vs. all other matches)'>"
+                        f"<div style='font-size:0.78rem; color:#6b6b6b; text-transform:uppercase; "
+                        f"letter-spacing:0.5px; margin-bottom:4px;'>{label}</div>"
+                        f"<div style='font-size:1.35rem; font-weight:700; color:#1a1a1a;'>"
+                        f"{selected_val:,.1f}{unit_suffix}</div>"
+                        f"{delta_html}"
+                        f"</div>"
+                    )
+
+                st.markdown(
+                    "<div style='display:flex; border:1px solid #e2e2e2; border-radius:10px; "
+                    "overflow:hidden; background:#ffffff;'>" + "".join(card_html_parts) + "</div>",
+                    unsafe_allow_html=True,
                 )
 
             st.markdown("---")
-            st.subheader("Team Overview")
-            overview_df = selected_df
-            if overview_df.empty:
-                st.warning("No player data available for this match.")
-            else:
-                if selected_match_label in match_order_desc:
-                    idx = match_order_desc.index(selected_match_label)
-                    window_labels = match_order_desc[idx: idx + 5]
+            with st.container(key="print_team_overview"):
+                st.subheader("Team Overview")
+                overview_df = selected_df
+                if overview_df.empty:
+                    st.warning("No player data available for this match.")
                 else:
-                    window_labels = [selected_match_label]
-                matrix = gpsd.build_matrix_chart(
-                    overview_df, raw_df=raw, window_labels=window_labels, sort_by="Game Minutes (mins)"
-                )
-                st.altair_chart(matrix, use_container_width=True)
-            st.caption("Sorted by Game Minutes, highest to lowest. Hover a bar to see the 5 most recent matches.")
+                    if selected_match_label in match_order_desc:
+                        idx = match_order_desc.index(selected_match_label)
+                        window_labels = match_order_desc[idx: idx + 5]
+                    else:
+                        window_labels = [selected_match_label]
+                    gpsd.render_matrix_chart(
+                        overview_df, raw_df=raw, window_labels=window_labels, sort_by="Game Minutes (mins)"
+                    )
+                st.caption("Sorted by Game Minutes, highest to lowest. Hover a bar to see the 5 most recent matches.")
 
 elif nav_section == "Performance" and nav_page == "Record RPE":
     rpe_team = st.selectbox("Team", TEAMS, key="rpe_team")
