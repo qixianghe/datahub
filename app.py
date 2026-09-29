@@ -249,6 +249,65 @@ GPS_DASHBOARD_COLUMN_MAP = {
 }
 
 
+# Shared by the Match History "Highest Intensity Matches" cards and the
+# Player Match Comparisons table, so both compute/label these identically.
+INTENSITY_COLS = ["total_distance_m", "hsr_distance_m", "sprint_distance_m", "hi_actions", "hmld_m"]
+INTENSITY_LABELS = {
+    "total_distance_m": "Total Distance (m)",
+    "hsr_distance_m": "HSR Distance (m)",
+    "sprint_distance_m": "Sprint Distance (m)",
+    "hi_actions": "HI Actions",
+    "hmld_m": "HMLD (m)",
+}
+
+
+def compute_intensity_summary(player_matches: pd.DataFrame):
+    """Given one player's raw (pre-rename) Match-type session rows, returns
+    {"values": {col: mean}, "is_estimated": bool, "pb_speed": float,
+    "n_full90": int} or None if there isn't enough data to compute anything.
+
+    - With >=3 exact 90-minute (active_duration_min == 90) instances, this
+      averages the top-3 of those by hmld_m directly.
+    - Otherwise, it takes the top-3 instances overall by hmld_m and
+      normalizes each intensity stat to a 90-minute rate before averaging
+      ("is_estimated" is True in this case).
+    - pb_speed is the player's personal-best max_speed_km_per_h across all
+      of their match rows, independent of the 90-minute logic above.
+    """
+    needed_cols = set(INTENSITY_COLS) | {"active_duration_min", "max_speed_km_per_h"}
+    if not needed_cols.issubset(player_matches.columns):
+        return None
+
+    full90 = player_matches[
+        pd.to_numeric(player_matches["active_duration_min"], errors="coerce") == 90
+    ].copy()
+    full90 = full90.dropna(subset=["hmld_m"])
+    n_full90 = len(full90)
+
+    is_estimated = False
+    values = None
+    if n_full90 >= 3:
+        top3 = full90.sort_values("hmld_m", ascending=False).head(3)
+        values = {c: pd.to_numeric(top3[c], errors="coerce").mean() for c in INTENSITY_COLS}
+    else:
+        candidates = player_matches.dropna(subset=["hmld_m", "active_duration_min"]).copy()
+        candidates = candidates[pd.to_numeric(candidates["active_duration_min"], errors="coerce") > 0]
+        if not candidates.empty:
+            is_estimated = True
+            top3 = candidates.sort_values("hmld_m", ascending=False).head(3)
+            minutes = pd.to_numeric(top3["active_duration_min"], errors="coerce")
+            normalized = pd.DataFrame(
+                {c: pd.to_numeric(top3[c], errors="coerce") / minutes * 90 for c in INTENSITY_COLS}
+            )
+            values = {c: normalized[c].mean() for c in INTENSITY_COLS}
+
+    if values is None:
+        return None
+
+    pb_speed = pd.to_numeric(player_matches["max_speed_km_per_h"], errors="coerce").max()
+    return {"values": values, "is_estimated": is_estimated, "pb_speed": pb_speed, "n_full90": n_full90}
+
+
 PROFILE_PIC_DIR = Path(__file__).parent / "utils" / "profilepic"
 
 
@@ -280,14 +339,20 @@ def get_initials(name: str) -> str:
     return name[:2].upper()
 
 
-def render_avatar_html(player: dict, color: str) -> str:
-    """Absolutely-positioned avatar for a card's top-right corner.
+def render_avatar_html(player: dict, color: str, absolute: bool = True) -> str:
+    """Avatar image/initials circle for a player card.
 
     Looks for a photo in this order:
       1. player['photo_path'] — a filename inside utils/profilepic/
          (e.g. "liam_carter.jpg"), loaded and embedded as a data URI.
       2. player['photo_url'] — a plain web URL.
       3. Falls back to a colored initials circle if neither is set.
+
+    When absolute=True (the default, used by the square Player Availability
+    cards), it's pinned to the card's top-right corner. When absolute=False
+    (used by the wider Unavailable/Modified Players list cards), it's a
+    normal centered block element instead, since those cards lay content
+    out in columns rather than floating the avatar over everything else.
 
     Add either key per player in utils/roster.py once real photos exist.
     """
@@ -297,17 +362,23 @@ def render_avatar_html(player: dict, color: str) -> str:
     if not photo_src and player.get("photo_url"):
         photo_src = player["photo_url"]
 
+    size = 56
+    box_style = (
+        f"position:absolute; top:8px; right:5px; width:{size}px; height:{size}px;"
+        if absolute
+        else f"width:{size}px; height:{size}px; margin:0 auto 12px auto;"
+    )
+
     if photo_src:
         return (
-            f"<img src='{photo_src}' style='position:absolute; top:8px; right:5px; "
-            f"width:56px; height:56px; border-radius:50%; object-fit:cover; z-index:2;' />"
+            f"<img src='{photo_src}' style='{box_style} border-radius:50%; "
+            f"object-fit:cover; z-index:2; display:block;' />"
         )
     initials = get_initials(player["name"])
     return (
-        f"<div style='position:absolute; top:8px; right:5px; width:56px; height:56px; "
-        f"border-radius:50%; background-color:{color}; color:#ffffff; display:flex; "
-        f"align-items:center; justify-content:center; font-size:1.1rem; font-weight:700; "
-        f"z-index:2;'>{initials}</div>"
+        f"<div style='{box_style} border-radius:50%; background-color:{color}; color:#ffffff; "
+        f"display:flex; align-items:center; justify-content:center; font-size:1.1rem; "
+        f"font-weight:700; z-index:2;'>{initials}</div>"
     )
 
 
@@ -518,12 +589,14 @@ NAV_STRUCTURE = {
         ("▦", "GPS Match Dashboard"),
         ("◐", "Record RPE"),
         ("▤", "Match History"),
+        ("⇄", "Player Match Comparisons"),
     ],
     "Medical": [
         ("⚕", "View Medical Information"),
         ("+", "Add Medical Information"),
         ("✎", "Add/Edit Observations"),
         ("●", "Player Availability"),
+        ("⚠", "Unavailable/Modified Players"),
     ],
 }
 
@@ -977,6 +1050,7 @@ elif nav_section == "Performance" and nav_page == "Match History":
                     "sprint_distance_m": "Sprint Distance (m)",
                     "hi_actions": "HI Actions",
                     "hmld_m": "HMLD (m)",
+                    "max_speed_km_per_h": "Max Speed (km/h)",
                 }
                 available_cols = [c for c in display_cols_map if c in player_matches.columns]
                 display_df = (
@@ -984,6 +1058,43 @@ elif nav_section == "Performance" and nav_page == "Match History":
                     .rename(columns=display_cols_map)
                     .reset_index(drop=True)
                 )
+
+                # ---- "Highest Intensity Matches" summary cards ----
+                # Built from the raw (pre-rename) player_matches rows via
+                # compute_intensity_summary, so exact 90-minute instances
+                # can be picked out via active_duration_min before any
+                # renaming/formatting.
+                summary = compute_intensity_summary(player_matches)
+                if summary is not None:
+                    st.markdown("#### Highest Intensity Matches")
+                    card_defs = [
+                        (INTENSITY_LABELS[c], summary["values"][c], "") for c in INTENSITY_COLS
+                    ]
+                    card_defs.append(("Max Speed PB (km/h)", summary["pb_speed"], "pb"))
+
+                    card_html = (
+                        "<div style='display:flex; gap:0; border:1px solid #dcdfe4; "
+                        "border-radius:10px; overflow:hidden; margin-bottom:4px;'>"
+                    )
+                    for i, (label, value, kind) in enumerate(card_defs):
+                        border_left = "border-left:1px solid #dcdfe4;" if i > 0 else ""
+                        bg = "#f0f7ff" if kind == "pb" else "#ffffff"
+                        value_str = "—" if pd.isna(value) else f"{value:,.1f}"
+                        card_html += (
+                            f"<div style='flex:1; {border_left} background-color:{bg}; "
+                            f"padding:14px 10px; text-align:center;'>"
+                            f"<div style='font-size:0.78rem; color:#808495; margin-bottom:6px;'>{label}</div>"
+                            f"<div style='font-size:1.3rem; font-weight:700;'>{value_str}</div>"
+                            f"</div>"
+                        )
+                    card_html += "</div>"
+                    st.markdown(card_html, unsafe_allow_html=True)
+
+                    if summary["is_estimated"]:
+                        st.caption(
+                            "Note: Theoretical estimation as player has not "
+                            "completed enough 90-minute matches"
+                        )
 
                 if display_df.empty:
                     st.info(f"No match history found for {selected_player}.")
@@ -1033,13 +1144,145 @@ elif nav_section == "Performance" and nav_page == "Match History":
                         fit_columns_on_grid_load=True,
                         theme="balham",
                         allow_unsafe_jscode=True,
+                        height=540,  # ~35% taller than AgGrid's 400px default
                     )
                 else:
-                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    st.dataframe(display_df, use_container_width=True, hide_index=True, height=540)
                     st.caption(
                         "Install `streamlit-aggrid` (add it to requirements.txt) "
                         "for a styled, sortable/filterable grid here."
                     )
+
+elif nav_section == "Performance" and nav_page == "Player Match Comparisons":
+    try:
+        players_df = read_table(PLAYERS_TABLE)
+    except Exception as e:
+        players_df = pd.DataFrame()
+        st.info(f"Could not load players yet ({e}).")
+
+    try:
+        sessions_df = read_table("gps_session_data")
+    except Exception as e:
+        sessions_df = pd.DataFrame()
+        st.info(f"Could not load session data yet ({e}).")
+
+    if players_df.empty or "sub_position" not in players_df.columns:
+        st.info(
+            "No 'sub_position' data found on the players table — add a "
+            "sub_position column (e.g. 'Center Back', 'Winger') to use this page."
+        )
+    elif sessions_df.empty or "session_type" not in sessions_df.columns:
+        st.info("No session data uploaded yet.")
+    else:
+        comp_team = st.selectbox("Team", TEAMS, key="comp_team")
+
+        team_players = players_df[players_df["team"] == comp_team].copy()
+        if "active" in team_players.columns:
+            team_players = team_players[team_players["active"] != False]  # keep True/missing
+
+        match_df = sessions_df[sessions_df["session_type"] == "Match"].copy()
+
+        if team_players.empty:
+            st.info(f"No players found for {comp_team}.")
+        elif match_df.empty or "player" not in match_df.columns:
+            st.info("No Match-type sessions uploaded yet — upload one in the Upload page first.")
+        else:
+            # Exclude goalkeepers and any player without a sub_position set —
+            # this page is a sub-position vs sub-position comparison, so
+            # neither group has anything meaningful to compare here.
+            if "position" in team_players.columns:
+                team_players = team_players[team_players["position"] != POSITION_ORDER[0]]
+            team_players = team_players[
+                team_players["sub_position"].notna() & (team_players["sub_position"].astype(str).str.strip() != "")
+            ]
+
+            # One row per player, computed exactly like the Match History
+            # "Highest Intensity Matches" cards — same helper, same numbers.
+            rows = []
+            for _, prow in team_players.iterrows():
+                name = prow.get("name")
+                sub_pos = prow.get("sub_position")
+                player_matches = match_df[match_df["player"] == name]
+                summary = compute_intensity_summary(player_matches) if not player_matches.empty else None
+
+                row = {"sub_position": sub_pos, "Player": name}
+                for c in INTENSITY_COLS:
+                    val = summary["values"][c] if summary else None
+                    row[INTENSITY_LABELS[c]] = None if val is None or pd.isna(val) else round(val, 1)
+                pb = summary["pb_speed"] if summary else None
+                row["Max Speed PB (km/h)"] = None if pb is None or pd.isna(pb) else round(pb, 1)
+                # Flagged (and row-shaded) whenever there weren't at least 3
+                # exact 90-minute instances to average — i.e. whenever the
+                # matching cards on Match History would show as estimated,
+                # plus players with no match data at all.
+                row["_low_sample"] = (summary is None) or (summary["n_full90"] < 3)
+                rows.append(row)
+
+            comp_df = pd.DataFrame(rows)
+
+            if comp_df.empty:
+                st.info(f"No outfield players with a sub_position set were found for {comp_team}.")
+            else:
+                # Tightened vertical rhythm so the per-sub-position tables
+                # sit close together instead of the usual Streamlit spacing.
+                st.markdown(
+                    "<style>"
+                    "div[data-testid='stVerticalBlock'] > div[data-testid='element-container'] "
+                    "{margin-bottom: 0.15rem !important;}"
+                    "</style>",
+                    unsafe_allow_html=True,
+                )
+                for sub_pos in sorted(comp_df["sub_position"].unique().tolist()):
+                    st.markdown(
+                        f"<div style='font-weight:700; font-size:1rem; margin:4px 0 2px 0;'>{sub_pos}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    group_df = (
+                        comp_df[comp_df["sub_position"] == sub_pos]
+                        .drop(columns=["sub_position"])
+                        .sort_values("HMLD (m)", ascending=False, na_position="last")
+                        .reset_index(drop=True)
+                    )
+
+                    if HAS_AGGRID:
+                        gb = GridOptionsBuilder.from_dataframe(group_df)
+                        gb.configure_default_column(resizable=True, sortable=True, filter=True)
+                        gb.configure_column("_low_sample", hide=True)
+                        grid_options = gb.build()
+                        # Shade the whole row a very faint grey when the
+                        # player doesn't have at least 3 full 90-minute
+                        # instances (i.e. their numbers are estimated).
+                        grid_options["getRowStyle"] = JsCode(
+                            """
+                            function(params) {
+                                if (params.data._low_sample) {
+                                    return { backgroundColor: '#f4f4f5' };
+                                }
+                                return {};
+                            }
+                            """
+                        )
+                        grid_options["domLayout"] = "autoHeight"
+                        AgGrid(
+                            group_df,
+                            gridOptions=grid_options,
+                            fit_columns_on_grid_load=True,
+                            theme="balham",
+                            allow_unsafe_jscode=True,
+                        )
+                    else:
+                        st.dataframe(
+                            group_df.drop(columns=["_low_sample"]),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                if not HAS_AGGRID:
+                    st.caption(
+                        "Install `streamlit-aggrid` (add it to requirements.txt) "
+                        "for a styled grid with row-shading for low-sample players here."
+                    )
+                else:
+                    st.caption("Rows shaded grey: player has fewer than 3 full 90-minute match instances.")
 
 elif nav_section == "Medical" and nav_page == "View Medical Information":
     try:
@@ -1714,6 +1957,242 @@ elif nav_section == "Medical" and nav_page == "Add/Edit Observations":
                                             unsafe_allow_html=True,
                                         )
                                         st.markdown(_fmt(value))
+
+elif nav_section == "Medical" and nav_page == "Unavailable/Modified Players":
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stVerticalBlockBorderWrapper"] { padding: 0.35rem 0.6rem !important; }
+        div[data-testid="stVerticalBlock"] { gap: 0.15rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    try:
+        players_df = read_table(PLAYERS_TABLE)
+    except Exception as e:
+        players_df = pd.DataFrame()
+        st.info(
+            f"Could not load the players table yet ({e}). Run "
+            "schema_players.sql in Supabase and add your roster there."
+        )
+    roster_by_team = build_roster_dict(players_df)
+
+    unavail_team = st.selectbox("Team", TEAMS, key="unavail_team")
+    roster = roster_by_team.get(unavail_team, {})
+    if not roster:
+        st.info(f"No players found for {unavail_team} in the players table yet.")
+
+    try:
+        current_data = get_current_player_data(unavail_team)
+    except Exception as e:
+        current_data = {}
+        st.info(
+            f"Could not load existing availability yet ({e}). "
+            "Defaulting everyone to 'Available' — this is expected the "
+            "first time the table is queried before it exists in Supabase."
+        )
+
+    flat_players = [
+        (position, player)
+        for position in POSITION_ORDER
+        for player in roster.get(position, [])
+    ]
+
+    # Left: Available / Available - Attention. Right: Available - Modified /
+    # Unavailable — same status groupings, just split the other way round
+    # from the Player Availability summary counts.
+    RIGHT_STATUSES = {"Unavailable", "Available - Modified"}
+
+    left_entries, right_entries = [], []
+    for position, player in flat_players:
+        status = current_data.get(player["name"], {}).get("status", "Available")
+        bucket = right_entries if status in RIGHT_STATUSES else left_entries
+        bucket.append((position, player, status))
+
+    # ---- Per-card colour CSS — same status tints as Player Availability,
+    # plus a tight, small Edit button (default width would span the full
+    # narrow left column and visually collide with the pill above it).
+    card_css_rules = []
+    for _, player, status in left_entries + right_entries:
+        colors = STATUS_CARD_COLORS[status]
+        key_slug = slugify(f"unavail_card_{unavail_team}_{player['name']}")
+        btn_slug = slugify(f"unavail_edit_{unavail_team}_{player['name']}")
+        card_css_rules.append(
+            f'.st-key-{key_slug} {{ '
+            f'background-color: {colors["bg"]} !important; '
+            f'border: 1px solid {colors["border"]} !important; '
+            f'}} '
+            f'.st-key-{btn_slug} {{ '
+            f'display:flex !important; justify-content:center !important; '
+            f'}} '
+            f'.st-key-{btn_slug} button {{ '
+            f'margin:10px 0 0 0 !important; '
+            f'padding:0 12px !important; min-height:22px !important; height:22px !important; '
+            f'line-height:1 !important; font-size:0.75rem !important; '
+            f'}}'
+        )
+    st.markdown(f"<style>{''.join(card_css_rules)}</style>", unsafe_allow_html=True)
+
+    @st.fragment
+    def _render_unavail_card(position, player, status):
+        """One player's wide list-row card: a narrower left column with
+        photo/name/status/edit, a wider right column with the medical and
+        modification notes in full (not clamped, unlike the Player
+        Availability grid cards) — this page exists specifically to read
+        those notes at a glance. Its own fragment so editing one card
+        doesn't rerun the whole page."""
+        name = player["name"]
+        saved = current_data.get(name, {})
+        saved_notes = saved.get("medical_notes", "")
+        saved_mod_notes = saved.get("modification_notes", "")
+
+        edit_key = f"unavail_editing_{unavail_team}_{name}"
+        if edit_key not in st.session_state:
+            st.session_state[edit_key] = False
+
+        card_key = slugify(f"unavail_card_{unavail_team}_{name}")
+        pos_color = POSITION_COLORS[position]
+        editing = st.session_state[edit_key]
+
+        with st.container(border=True, key=card_key):
+            left_col, right_col = st.columns([1, 2], gap="medium")
+            with left_col:
+                st.markdown(
+                    render_avatar_html(player, pos_color, absolute=False),
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"<div style='text-align:center; font-weight:600; margin-bottom:8px;'>{name}</div>",
+                    unsafe_allow_html=True,
+                )
+                if not editing:
+                    pill_color = STATUS_PILL_COLORS[status]
+                    pill_label = STATUS_CARD_LABELS.get(status, status)
+                    st.markdown(
+                        f"<div style='text-align:center; margin-bottom:16px;'>"
+                        f"<span style='background-color:{pill_color}; color:#ffffff; "
+                        f"padding:2px 10px; border-radius:10px; font-size:0.75rem; "
+                        f"font-weight:600; display:inline-block;'>{pill_label}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                    # Sized/centered by the .st-key-{btn_slug} rules
+                    # generated above — the wrapper div is flexed with
+                    # justify-content:center so the button sits centered
+                    # under the pill, with a top margin for spacing.
+                    if st.button("✎ Edit", key=f"unavail_edit_{unavail_team}_{name}"):
+                        st.session_state[edit_key] = True
+                        st.rerun(scope="fragment")
+                else:
+                    new_status = st.pills(
+                        label=name,
+                        options=STATUS_OPTIONS,
+                        format_func=lambda s: STATUS_DISPLAY[s],
+                        selection_mode="single",
+                        default=status,
+                        key=f"unavail_pill_{unavail_team}_{name}",
+                        label_visibility="collapsed",
+                    )
+
+            with right_col:
+                if not editing:
+                    med_text = html.escape(saved_notes) if saved_notes else "No medical notes"
+                    mod_text = html.escape(saved_mod_notes) if saved_mod_notes else "No modification notes"
+                    # Fixed-height container split exactly in half so the
+                    # Modification notes block always starts at the card's
+                    # vertical midpoint, regardless of how long the Medical
+                    # notes text is (overflow is clipped rather than
+                    # pushing Mods down/onto the next line).
+                    st.markdown(
+                        "<div style='display:flex; flex-direction:column; height:84px;'>"
+                        f"<div style='flex:1 1 50%; overflow:hidden; font-size:0.82rem; "
+                        f"color:#3c3c3c; white-space:pre-wrap; line-height:1.3;'>"
+                        f"<b>Medical:</b> {med_text}</div>"
+                        f"<div style='flex:1 1 50%; overflow:hidden; font-size:0.82rem; "
+                        f"color:#3c3c3c; white-space:pre-wrap; line-height:1.3;'>"
+                        f"<b>Mods:</b> {mod_text}</div>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    new_notes = st.text_area(
+                        "Medical notes",
+                        value=saved_notes,
+                        key=f"unavail_notes_{unavail_team}_{name}",
+                        height=70,
+                        label_visibility="collapsed",
+                        placeholder="Medical notes...",
+                    )
+                    new_mod_notes = st.text_area(
+                        "Modification notes",
+                        value=saved_mod_notes,
+                        key=f"unavail_mod_notes_{unavail_team}_{name}",
+                        height=70,
+                        label_visibility="collapsed",
+                        placeholder="Modification notes...",
+                    )
+                    save_col, cancel_col = st.columns(2)
+                    with save_col:
+                        if st.button(
+                            "Save",
+                            key=f"unavail_save_{unavail_team}_{name}",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            record = {
+                                "team": unavail_team,
+                                "player": name,
+                                "position": position,
+                                "status": new_status or status,
+                                "medical_notes": new_notes,
+                                "modification_notes": new_mod_notes,
+                                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                            try:
+                                write_availability([record])
+                                get_current_player_data.clear()
+                                st.session_state[edit_key] = False
+                                st.rerun()
+                            except Exception as e:
+                                st.error(
+                                    f"Save failed: {e}. If the table doesn't "
+                                    "exist yet, run schema_availability.sql "
+                                    "(and migrations/001_add_medical_notes.sql, "
+                                    "migrations/002_add_modification_notes.sql "
+                                    "if it was created before notes support)."
+                                )
+                    with cancel_col:
+                        if st.button(
+                            "Cancel", key=f"unavail_cancel_{unavail_team}_{name}", use_container_width=True
+                        ):
+                            st.session_state[edit_key] = False
+                            st.rerun(scope="fragment")
+
+    header_left, header_right = st.columns(2, gap="medium")
+    with header_left:
+        st.markdown(
+            "<div style='font-size:1.05rem; font-weight:600; margin-bottom:6px;'>Available</div>",
+            unsafe_allow_html=True,
+        )
+    with header_right:
+        st.markdown(
+            "<div style='font-size:1.05rem; font-weight:600; margin-bottom:6px;'>Unavailable / Modified</div>",
+            unsafe_allow_html=True,
+        )
+
+    body_left, body_right = st.columns(2, gap="medium")
+    with body_left:
+        if not left_entries:
+            st.caption("No available players.")
+        for position, player, status in left_entries:
+            _render_unavail_card(position, player, status)
+    with body_right:
+        if not right_entries:
+            st.caption("No unavailable or modified players.")
+        for position, player, status in right_entries:
+            _render_unavail_card(position, player, status)
 
 else:  # nav_section == "Medical" and nav_page == "Player Availability"
     # Tightens default Streamlit spacing so a full squad's cards fit
