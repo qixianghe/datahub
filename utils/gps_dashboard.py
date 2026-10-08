@@ -112,7 +112,8 @@ TEAM_LOGOS = {
     "adelaide united" : "https://assets.football-logos.cc/logos/australia/512x512/adelaide-united.e09ecd91.png",
     "tai po": "https://assets.football-logos.cc/logos/hong-kong/512x512/tai-po.8e42ef90.png",
     "JDT" : "https://assets.football-logos.cc/logos/malaysia/512x512/johor-darul-tazim.6930484d.png",
-    "bangkok united" : "https://assets.football-logos.cc/logos/thailand/512x512/true-bangkok-united.d7b3629c.png"
+    "bangkok united" : "https://assets.football-logos.cc/logos/thailand/512x512/true-bangkok-united.d7b3629c.png",
+    "cong an hanoi" : "https://assets.football-logos.cc/logos/vietnam/700x700/cong-an-ha-noi.2ba2b7fc.png"
 }
 
 
