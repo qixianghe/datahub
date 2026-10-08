@@ -10,6 +10,7 @@ from supabase import create_client
 
 from utils.columns import sanitize_columns
 from utils import gps_dashboard as gpsd
+from utils.screening_dashboard import render_screening_page
 
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
@@ -55,6 +56,7 @@ PLAYERS_TABLE = "players"
 MEDICAL_TABLE = "medical_records"
 RPE_TABLE = "session_rpe"
 TREATMENT_TABLE = "treatment_observations"
+SCREENING_TABLE = "screening_results"
 
 # Player position groups. This ordering (not the player data itself) is
 # structural, not sensitive, so it stays a code constant — actual player
@@ -590,6 +592,7 @@ NAV_STRUCTURE = {
         ("◐", "Record RPE"),
         ("▤", "Match History"),
         ("⇄", "Player Match Comparisons"),
+        ("✚", "Performance/Medical Screening"),
     ],
     "Medical": [
         ("⚕", "View Medical Information"),
@@ -1283,6 +1286,17 @@ elif nav_section == "Performance" and nav_page == "Player Match Comparisons":
                     )
                 else:
                     st.caption("Rows shaded grey: player has fewer than 3 full 90-minute match instances.")
+
+elif nav_section == "Performance" and nav_page == "Performance/Medical Screening":
+    try:
+        screening_df = read_table(SCREENING_TABLE)
+    except Exception as e:
+        screening_df = pd.DataFrame()
+        st.info(
+            f"Could not load screening_results yet ({e}). Run "
+            "schema_screening.sql in Supabase to create the table."
+        )
+    render_screening_page(screening_df)
 
 elif nav_section == "Medical" and nav_page == "View Medical Information":
     try:
