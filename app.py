@@ -11,6 +11,8 @@ from supabase import create_client
 from utils.columns import sanitize_columns
 from utils import gps_dashboard as gpsd
 from utils.screening_dashboard import render_screening_page
+from utils.rpe_fatigue_dashboard import build_rpe_fatigue_html, build_rpe_rows
+import streamlit.components.v1 as components
 
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
@@ -261,6 +263,44 @@ INTENSITY_LABELS = {
     "hi_actions": "HI Actions",
     "hmld_m": "HMLD (m)",
 }
+
+# Per-minute load bands for the Match History legend (shown when the
+# "per minute" checkbox is ticked). Each entry is (low_upper, high_lower):
+# value < low_upper -> Low, value >= high_lower -> High, otherwise Medium.
+# These are approximate, round-number bands based on typical per-minute
+# match values reported for elite men's football (Premier League / La Liga
+# style tracking data, ~19.8 km/h HSR and ~25.2 km/h sprint thresholds,
+# HMLD at >25.5 W/kg). They are NOT official cut-offs and depend on your GPS
+# vendor's speed-zone definitions, so calibrate them against your own squad
+# data — edit the numbers here to change the legend.
+PER_MIN_BANDS = {
+    "total_distance_m": {"label": "Total Distance", "unit": "m/min", "low_upper": 100, "high_lower": 115},
+    "hsr_distance_m": {"label": "HSR Distance", "unit": "m/min", "low_upper": 6, "high_lower": 10},
+    "sprint_distance_m": {"label": "Sprint Distance", "unit": "m/min", "low_upper": 1.5, "high_lower": 3},
+    "hmld_m": {"label": "HMLD", "unit": "m/min", "low_upper": 18, "high_lower": 25},
+    # HI Actions depends heavily on the vendor's own definition of an
+    # "action", so treat these as placeholders until calibrated.
+    "hi_actions": {"label": "HI Actions", "unit": "/min", "low_upper": 1.2, "high_lower": 1.8},
+}
+
+# Colours shared by the legend cards and the per-minute table cell shading.
+PER_MIN_BAND_COLORS = {
+    "Low": {"bg": "#e8f1fb", "fg": "#1f5fa8"},
+    "Medium": {"bg": "#fff4e0", "fg": "#b26a00"},
+    "High": {"bg": "#fdecea", "fg": "#c62828"},
+}
+
+
+def per_min_band_level(col: str, value):
+    """'Low' / 'Medium' / 'High' for a per-minute value, or None if blank."""
+    if value is None or pd.isna(value):
+        return None
+    band = PER_MIN_BANDS[col]
+    if value < band["low_upper"]:
+        return "Low"
+    if value >= band["high_lower"]:
+        return "High"
+    return "Medium"
 
 
 def compute_intensity_summary(player_matches: pd.DataFrame):
@@ -590,6 +630,7 @@ NAV_STRUCTURE = {
         ("↑", "Upload"),
         ("▦", "GPS Match Dashboard"),
         ("◐", "Record RPE"),
+        ("◑", "View RPE & Fatigue"),
         ("▤", "Match History"),
         ("⇄", "Player Match Comparisons"),
         ("✚", "Performance/Medical Screening"),
@@ -970,6 +1011,65 @@ elif nav_section == "Performance" and nav_page == "Record RPE":
                         "yet, run schema_rpe.sql."
                     )
 
+elif nav_section == "Performance" and nav_page == "View RPE & Fatigue":
+    # Reads the rpe and rps (fatigue/recovery) columns on gps_session_data
+    # for the chosen team + session and feeds them into the HTML dashboard.
+    try:
+        rpe_view_df = read_table("gps_session_data")
+    except Exception as e:
+        rpe_view_df = pd.DataFrame()
+        st.info(f"Could not load session data yet ({e}).")
+
+    if rpe_view_df.empty:
+        st.info("No session data uploaded yet.")
+    elif not {"rpe", "rps"} <= set(rpe_view_df.columns):
+        st.warning("gps_session_data needs both 'rpe' and 'rps' columns for this page.")
+    else:
+        view_team = st.selectbox("Team", TEAMS, key="rpe_view_team")
+
+        # Only offer sessions that actually have RPE/fatigue values entered.
+        with_scores = rpe_view_df[
+            pd.to_numeric(rpe_view_df["rpe"], errors="coerce").notna()
+            & pd.to_numeric(rpe_view_df["rps"], errors="coerce").notna()
+        ]
+        view_options = build_occurred_in_options(with_scores, view_team)
+
+        if not view_options:
+            st.info(f"No sessions with RPE and fatigue scores found for {view_team} yet.")
+        else:
+            view_label = st.selectbox(
+                "Session (Date + Session Type)", list(view_options.keys()), key="rpe_view_session"
+            )
+            view_date, view_type = view_options[view_label]
+
+            session_rows = with_scores[
+                (with_scores["team"] == view_team)
+                & (with_scores["session_date"] == view_date)
+                & (with_scores["session_type"] == view_type)
+            ]
+            rows = build_rpe_rows(session_rows)
+
+            parsed_date = pd.to_datetime(view_date, errors="coerce")
+            date_text = (
+                f"{parsed_date.strftime('%a')} {parsed_date.day} {parsed_date.strftime('%b %Y')}"
+                if pd.notna(parsed_date)
+                else str(view_date)
+            )
+            meta = f"{date_text} · {view_type}"
+            if "opposition" in session_rows.columns:
+                opp = session_rows["opposition"].dropna().astype(str)
+                if not opp.empty and opp.iloc[0].strip():
+                    meta += f" vs {opp.iloc[0].strip()}"
+
+            if not rows:
+                st.info("No players with both RPE and fatigue scores for this session.")
+            else:
+                components.html(
+                    build_rpe_fatigue_html(rows, meta),
+                    height=1000 + 64 * len(rows),
+                    scrolling=True,
+                )
+
 elif nav_section == "Performance" and nav_page == "Match History":
     try:
         sessions_df = read_table("gps_session_data")
@@ -1056,11 +1156,27 @@ elif nav_section == "Performance" and nav_page == "Match History":
                     "max_speed_km_per_h": "Max Speed (km/h)",
                 }
                 available_cols = [c for c in display_cols_map if c in player_matches.columns]
-                display_df = (
-                    player_matches[available_cols]
-                    .rename(columns=display_cols_map)
-                    .reset_index(drop=True)
+
+                # Optional per-minute view: divides the GPS volume columns
+                # by active_duration_min for each row. Max speed is a peak
+                # value (not a volume), so it's left as-is, and the
+                # "Highest Intensity Matches" cards below are unaffected.
+                per_min = st.checkbox(
+                    "Show GPS values per minute (÷ Active Duration)",
+                    key="match_history_per_min",
                 )
+
+                table_src = player_matches[available_cols].copy()
+                col_labels = dict(display_cols_map)
+                if per_min and "active_duration_min" in table_src.columns:
+                    minutes = pd.to_numeric(table_src["active_duration_min"], errors="coerce")
+                    minutes = minutes.where(minutes > 0)  # 0 / missing -> NaN, avoids divide-by-zero
+                    for c in INTENSITY_COLS:
+                        if c in table_src.columns:
+                            table_src[c] = (pd.to_numeric(table_src[c], errors="coerce") / minutes).round(2)
+                            col_labels[c] = INTENSITY_LABELS[c].replace(")", "/min)") if ")" in INTENSITY_LABELS[c] else f"{INTENSITY_LABELS[c]} /min"
+
+                display_df = table_src.rename(columns=col_labels).reset_index(drop=True)
 
                 # ---- "Highest Intensity Matches" summary cards ----
                 # Built from the raw (pre-rename) player_matches rows via
@@ -1116,6 +1232,20 @@ elif nav_section == "Performance" and nav_page == "Match History":
                                 full_header_col, wrapHeaderText=True, autoHeaderHeight=True
                             )
 
+                    # Centre the text (header and cells) for Active Duration
+                    # and every GPS data column. Columns that get a colour
+                    # style below repeat textAlign in their own cellStyle.
+                    center_headers = ["Active Duration (min)"] + [
+                        col_labels[c] for c in INTENSITY_COLS if c in col_labels
+                    ] + ["Max Speed (km/h)"]
+                    for center_header in center_headers:
+                        if center_header in display_df.columns:
+                            gb.configure_column(
+                                center_header,
+                                cellStyle={"textAlign": "center"},
+                                headerClass="center-header",
+                            )
+
                     # Shade "Active Duration (min)" light-to-dark green
                     # across a fixed 0-90 range (values are clamped to
                     # that range for the colour, not for the number shown).
@@ -1133,12 +1263,41 @@ elif nav_section == "Performance" and nav_page == "Match History":
                                 var b = Math.round(233 + (32 - 233) * t);
                                 return {
                                     backgroundColor: 'rgb(' + r + ',' + g + ',' + b + ')',
-                                    color: t > 0.55 ? 'white' : 'black'
+                                    color: t > 0.55 ? 'white' : 'black',
+                                    textAlign: 'center'
                                 };
                             }
                             """
                         )
                         gb.configure_column("Active Duration (min)", cellStyle=duration_cell_style)
+
+                    # Per-minute mode: shade each GPS cell Low/Medium/High
+                    # using PER_MIN_BANDS (same colours as the legend below).
+                    if per_min:
+                        for c in INTENSITY_COLS:
+                            header = col_labels.get(c)
+                            if header not in display_df.columns:
+                                continue
+                            band = PER_MIN_BANDS[c]
+                            lc, mc, hc = (PER_MIN_BAND_COLORS[k] for k in ("Low", "Medium", "High"))
+                            band_style = JsCode(
+                                f"""
+                                function(params) {{
+                                    var v = Number(params.value);
+                                    if (params.value === null || params.value === undefined || isNaN(v)) {{
+                                        return {{textAlign: 'center'}};
+                                    }}
+                                    if (v < {band["low_upper"]}) {{
+                                        return {{backgroundColor: '{lc["bg"]}', color: '{lc["fg"]}', textAlign: 'center'}};
+                                    }}
+                                    if (v >= {band["high_lower"]}) {{
+                                        return {{backgroundColor: '{hc["bg"]}', color: '{hc["fg"]}', textAlign: 'center'}};
+                                    }}
+                                    return {{backgroundColor: '{mc["bg"]}', color: '{mc["fg"]}', textAlign: 'center'}};
+                                }}
+                                """
+                            )
+                            gb.configure_column(header, cellStyle=band_style)
 
                     grid_options = gb.build()
                     AgGrid(
@@ -1148,13 +1307,68 @@ elif nav_section == "Performance" and nav_page == "Match History":
                         theme="balham",
                         allow_unsafe_jscode=True,
                         height=540,  # ~35% taller than AgGrid's 400px default
+                        custom_css={
+                            ".center-header .ag-header-cell-label": {"justify-content": "center"},
+                            ".center-header .ag-header-cell-text": {"text-align": "center"},
+                        },
                     )
                 else:
-                    st.dataframe(display_df, use_container_width=True, hide_index=True, height=540)
+                    if per_min:
+                        def _shade_band_cell(value, col):
+                            level = per_min_band_level(col, value)
+                            if level is None:
+                                return ""
+                            colors = PER_MIN_BAND_COLORS[level]
+                            return f"background-color: {colors['bg']}; color: {colors['fg']}"
+
+                        styled = display_df.style
+                        for c in INTENSITY_COLS:
+                            header = col_labels.get(c)
+                            if header in display_df.columns:
+                                styled = styled.map(_shade_band_cell, subset=[header], col=c)
+                        st.dataframe(styled, use_container_width=True, hide_index=True, height=540)
+                    else:
+                        st.dataframe(display_df, use_container_width=True, hide_index=True, height=540)
                     st.caption(
                         "Install `streamlit-aggrid` (add it to requirements.txt) "
                         "for a styled, sortable/filterable grid here."
                     )
+
+                # ---- Per-minute legend (only relevant when per-min is on) ----
+                if per_min:
+                    def _fmt_band(v):
+                        return f"{v:g}"
+
+                    band_colors = PER_MIN_BAND_COLORS
+
+                    st.markdown("#### Per-minute load legend")
+                    legend_cols = st.columns(len(INTENSITY_COLS))
+                    for col, c in zip(legend_cols, INTENSITY_COLS):
+                        band = PER_MIN_BANDS[c]
+                        lo, hi = band["low_upper"], band["high_lower"]
+                        ranges = {
+                            "Low": f"&lt; {_fmt_band(lo)}",
+                            "Medium": f"{_fmt_band(lo)} – {_fmt_band(hi)}",
+                            "High": f"&ge; {_fmt_band(hi)}",
+                        }
+                        rows_html = "".join(
+                            f"<div style='display:flex; justify-content:space-between; "
+                            f"align-items:center; background-color:{band_colors[lvl]['bg']}; "
+                            f"color:{band_colors[lvl]['fg']}; border-radius:6px; "
+                            f"padding:4px 8px; margin-top:4px; font-size:0.78rem;'>"
+                            f"<b>{lvl}</b><span>{ranges[lvl]}</span></div>"
+                            for lvl in ("Low", "Medium", "High")
+                        )
+                        with col:
+                            st.markdown(
+                                f"<div style='border:1px solid #dcdfe4; border-radius:10px; "
+                                f"padding:10px; background:#ffffff;'>"
+                                f"<div style='font-size:0.8rem; font-weight:600; color:#3c3c3c;'>"
+                                f"{band['label']}</div>"
+                                f"<div style='font-size:0.7rem; color:#808495;'>{band['unit']}</div>"
+                                f"{rows_html}</div>",
+                                unsafe_allow_html=True,
+                            )
 
 elif nav_section == "Performance" and nav_page == "Player Match Comparisons":
     try:
