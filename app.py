@@ -12,6 +12,14 @@ from utils.columns import sanitize_columns
 from utils import gps_dashboard as gpsd
 from utils.screening_dashboard import render_screening_page
 from utils.rpe_fatigue_dashboard import build_rpe_fatigue_html, build_rpe_rows
+from utils.skinfold_dashboard import (
+    DATE_COLUMN_CANDIDATES,
+    PLAYER_COLUMN_CANDIDATES,
+    SKINFOLD_COLUMN_NAME,
+    build_skinfold_html,
+    build_skinfold_rows,
+    find_column,
+)
 import streamlit.components.v1 as components
 
 try:
@@ -634,6 +642,7 @@ NAV_STRUCTURE = {
         ("▤", "Match History"),
         ("⇄", "Player Match Comparisons"),
         ("✚", "Performance/Medical Screening"),
+        ("≋", "Skinfold Analysis"),
     ],
     "Medical": [
         ("⚕", "View Medical Information"),
@@ -1511,6 +1520,77 @@ elif nav_section == "Performance" and nav_page == "Performance/Medical Screening
             "schema_screening.sql in Supabase to create the table."
         )
     render_screening_page(screening_df)
+
+elif nav_section == "Performance" and nav_page == "Skinfold Analysis":
+    # Reads "Skinfold Analysis - Sum of Skinfolds" from screening_results for
+    # the chosen screening date and feeds it into the HTML dashboard.
+    try:
+        skinfold_df = read_table(SCREENING_TABLE)
+    except Exception as e:
+        skinfold_df = pd.DataFrame()
+        st.info(f"Could not load screening_results yet ({e}).")
+
+    if skinfold_df.empty:
+        st.info("No screening data uploaded yet.")
+    else:
+        sf_value_col = find_column(skinfold_df, [SKINFOLD_COLUMN_NAME], contains="sum_of_skinfolds")
+        sf_player_col = find_column(skinfold_df, PLAYER_COLUMN_CANDIDATES)
+        sf_date_col = find_column(skinfold_df, DATE_COLUMN_CANDIDATES, contains="date")
+
+        missing_cols = [
+            label
+            for label, col in (
+                ("Skinfold Analysis - Sum of Skinfolds", sf_value_col),
+                ("a player column", sf_player_col),
+                ("a date column", sf_date_col),
+            )
+            if col is None
+        ]
+        if missing_cols:
+            st.warning(
+                f"Couldn't find {', '.join(missing_cols)} in screening_results. "
+                f"Columns available: {', '.join(map(str, skinfold_df.columns))}. "
+                "If they're named differently, update PLAYER_COLUMN_CANDIDATES / "
+                "DATE_COLUMN_CANDIDATES in utils/skinfold_dashboard.py."
+            )
+        else:
+            sf_df = skinfold_df.copy()
+            sf_df["_value"] = pd.to_numeric(sf_df[sf_value_col], errors="coerce")
+            sf_df["_date"] = pd.to_datetime(sf_df[sf_date_col], errors="coerce").dt.date
+            sf_df = sf_df.dropna(subset=["_value", "_date"])
+
+            if "team" in sf_df.columns and sf_df["team"].notna().any():
+                sf_teams = [t for t in TEAMS if t in set(sf_df["team"].dropna())] or sorted(
+                    sf_df["team"].dropna().unique().tolist()
+                )
+                sf_team = st.selectbox("Team", sf_teams, key="skinfold_team")
+                sf_df = sf_df[sf_df["team"] == sf_team]
+
+            sf_dates = sorted(sf_df["_date"].unique().tolist(), reverse=True)
+            if not sf_dates:
+                st.info("No skinfold measurements found yet.")
+            else:
+                sf_date = st.selectbox(
+                    "Screening date",
+                    sf_dates,
+                    format_func=lambda d: f"{d.day} {d.strftime('%b %Y')}",
+                    key="skinfold_date",
+                )
+                day_rows = build_skinfold_rows(
+                    sf_df[sf_df["_date"] == sf_date].rename(columns={"_value": "_sum"}),
+                    sf_player_col,
+                    "_sum",
+                )
+                if not any(v > 0 for _, v in day_rows):
+                    st.info("No valid skinfold sums recorded for this date.")
+                else:
+                    components.html(
+                        build_skinfold_html(
+                            day_rows, f"{sf_date.strftime('%a')} {sf_date.day} {sf_date.strftime('%b %Y')}"
+                        ),
+                        height=1400 + 40 * len(day_rows),
+                        scrolling=True,
+                    )
 
 elif nav_section == "Medical" and nav_page == "View Medical Information":
     try:
