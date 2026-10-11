@@ -135,6 +135,12 @@ TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
   td.name { font-weight: 600; }
   td.val { font-family: var(--f-display); font-weight: 700; font-size: 1.3rem; line-height: 1; font-variant-numeric: tabular-nums; }
   td.val small { font-family: var(--f-data); font-weight: 400; font-size: .7rem; color: var(--muted); margin-left: 3px; }
+  td.prev { font-family: var(--f-display); font-weight: 500; font-size: 1.15rem; line-height: 1; font-variant-numeric: tabular-nums; color: var(--muted); }
+  td.prev small { display: block; font-family: var(--f-data); font-weight: 400; font-size: .66rem; margin-top: 2px; }
+  .chg { display: inline-block; width: 1.1em; margin-right: 6px; text-align: center; font-family: var(--f-body); font-size: .95rem; font-weight: 700; }
+  .chg.up { color: var(--bad); }
+  .chg.down { color: var(--good); }
+  .chg.flat { color: var(--ink); }
   .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: .78rem; font-weight: 600; white-space: nowrap; background: var(--b-t); color: var(--b); }
   .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
   .rule { font-size: .8rem; color: var(--muted); margin: 0; }
@@ -186,13 +192,15 @@ TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
           <thead>
             <tr>
               <th data-k="name" aria-sort="none"><button type="button">Athlete</button></th>
-              <th data-k="v" class="r" aria-sort="descending"><button type="button">Sum (mm)</button></th>
+              <th data-k="prev" class="r" aria-sort="none"><button type="button">Previous (mm)</button></th>
+              <th data-k="v" class="r" aria-sort="descending"><button type="button">Latest (mm)</button></th>
               <th data-k="band" aria-sort="none"><button type="button">Band</button></th>
             </tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
+      <p class="rule">Arrow next to the latest sum compares it with the athlete's previous recording: <b style="color:var(--bad)">&#9650;</b> up 5 mm or more, <b style="color:var(--good)">&#9660;</b> down 5 mm or more, <b>&rarr;</b> within 5 mm. Previous is the most recent earlier measurement.</p>
     </div>
   </section>
 
@@ -226,7 +234,10 @@ TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
   var all = RAW.map(function (r) {
     var v = Number(r[1]);
     var ok = isFinite(v) && v > 0;
-    return { name: esc(r[0]), raw: r[0], v: ok ? v : null, ok: ok, band: ok ? bandIndex(v) : -1 };
+    var p = (r[2] === null || r[2] === undefined) ? NaN : Number(r[2]);
+    var hasPrev = isFinite(p) && p > 0;
+    return { name: esc(r[0]), raw: r[0], v: ok ? v : null, ok: ok, band: ok ? bandIndex(v) : -1,
+             prev: hasPrev ? p : null, prevDate: r[3] ? esc(r[3]) : "" };
   });
   var data = all.filter(function (d) { return d.ok; });
   var missing = all.filter(function (d) { return !d.ok; });
@@ -284,23 +295,44 @@ TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
 
   /* table */
   var sortKey = "v", sortDir = -1;
+  function prevCell(d) {
+    if (d.prev === null) return '<td class="prev r">–</td>';
+    return '<td class="prev r">' + f1(d.prev) + (d.prevDate ? '<small>' + d.prevDate + '</small>' : '') + '</td>';
+  }
+  /* change vs previous recording: 5 mm or more is flagged, anything smaller is neutral */
+  function chg(d) {
+    if (d.prev === null || d.v === null) return "";
+    var diff = Math.round((d.v - d.prev) * 10) / 10;
+    var sign = diff > 0 ? "+" : "";
+    var tip = "Previous " + f1(d.prev) + " mm" + (d.prevDate ? " (" + d.prevDate + ")" : "") + ", change " + sign + f1(diff) + " mm";
+    if (diff >= 5) return '<span class="chg up" title="' + tip + '" aria-label="Increase of ' + f1(diff) + ' mm">&#9650;</span>';
+    if (diff <= -5) return '<span class="chg down" title="' + tip + '" aria-label="Decrease of ' + f1(-diff) + ' mm">&#9660;</span>';
+    return '<span class="chg flat" title="' + tip + '" aria-label="Change under 5 mm">&rarr;</span>';
+  }
   function renderRows() {
     var rows = data.slice().sort(function (a, b) {
       if (sortKey === "name") return a.raw.localeCompare(b.raw) * sortDir;
+      if (sortKey === "prev") {
+        if (a.prev === null && b.prev === null) return b.v - a.v;
+        if (a.prev === null) return 1;   /* athletes with no previous recording always sit last */
+        if (b.prev === null) return -1;
+        return (a.prev - b.prev) * sortDir || b.v - a.v || a.raw.localeCompare(b.raw);
+      }
       var x = sortKey === "band" ? a.band : a.v, y = sortKey === "band" ? b.band : b.v;
       return (x - y) * sortDir || b.v - a.v || a.raw.localeCompare(b.raw);
     });
     document.getElementById("rows").innerHTML = rows.map(function (d) {
-      return '<tr class="' + BANDS[d.band].key + '"><td class="name">' + d.name + '</td><td class="val r">' + f1(d.v) + '</td>' +
+      return '<tr class="' + BANDS[d.band].key + '"><td class="name">' + d.name + '</td>' + prevCell(d) +
+        '<td class="val r">' + chg(d) + f1(d.v) + '</td>' +
         '<td><span class="pill">' + BANDS[d.band].label + '</span></td></tr>';
     }).join("") + missing.map(function (d) {
-      return '<tr class="na"><td class="name">' + d.name + '</td><td class="val r">–</td><td><span class="pill">Not measured</span></td></tr>';
+      return '<tr class="na"><td class="name">' + d.name + '</td>' + prevCell(d) + '<td class="val r">–</td><td><span class="pill">Not measured</span></td></tr>';
     }).join("");
   }
   document.querySelectorAll("th[data-k]").forEach(function (th) {
     th.querySelector("button").addEventListener("click", function () {
       var k = th.getAttribute("data-k");
-      sortDir = (sortKey === k) ? -sortDir : (k === "name" ? 1 : -1);
+      sortDir = (sortKey === k) ? -sortDir : (k === "name" || k === "prev" ? 1 : -1);
       sortKey = k;
       document.querySelectorAll("th[data-k]").forEach(function (o) { o.setAttribute("aria-sort", "none"); });
       th.setAttribute("aria-sort", sortDir === 1 ? "ascending" : "descending");
@@ -355,23 +387,46 @@ DATE_COLUMN_CANDIDATES = [
 ]
 
 
-def build_skinfold_rows(day_df: pd.DataFrame, player_col: str, value_col: str) -> list:
-    """[[name, sum_mm], ...] for one screening date.
+def build_skinfold_rows(
+    history_df: pd.DataFrame,
+    player_col: str,
+    value_col: str,
+    date_col: str,
+    selected_date,
+) -> list:
+    """[[name, latest_mm, previous_mm_or_None, previous_date_label], ...].
 
-    Rows with no skinfold value at all are skipped (that player wasn't
-    measured on this date). A recorded 0 is kept: the dashboard flags it as
-    "not measured". If a player has several rows on the date, the last one
-    is used.
+    history_df holds every screening row (all dates) with a numeric
+    value_col and a datetime.date date_col. Players are those with a value
+    on selected_date. A recorded 0 is kept for the latest value: the
+    dashboard flags it as "not measured". If a player has several rows on
+    the date, the last one is used.
+
+    Previous = the player's most recent measurement before selected_date
+    with a value above 0 (None if there isn't one).
     """
-    df = day_df[[player_col, value_col]].copy()
-    df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
-    df = df.dropna(subset=[player_col, value_col])
-    df = df.drop_duplicates(subset=player_col, keep="last")
-    return [[str(r[player_col]), round(float(r[value_col]), 1)] for _, r in df.iterrows()]
+    df = history_df[[player_col, value_col, date_col]].dropna().copy()
+    df = df.sort_values(date_col, kind="stable")
+
+    latest = df[df[date_col] == selected_date].drop_duplicates(subset=player_col, keep="last")
+    earlier = df[(df[date_col] < selected_date) & (df[value_col] > 0)]
+    prev_by_player = earlier.drop_duplicates(subset=player_col, keep="last").set_index(player_col)
+
+    rows = []
+    for _, r in latest.iterrows():
+        name = r[player_col]
+        prev_val, prev_label = None, ""
+        if name in prev_by_player.index:
+            prev_row = prev_by_player.loc[name]
+            prev_val = round(float(prev_row[value_col]), 1)
+            d = prev_row[date_col]
+            prev_label = f"{d.day} {d.strftime('%b %Y')}"
+        rows.append([str(name), round(float(r[value_col]), 1), prev_val, prev_label])
+    return rows
 
 
 def build_skinfold_html(rows: list, meta: str) -> str:
-    """Fill the template with one date's rows and a short date label."""
+    """Fill the template with one date's rows (see build_skinfold_rows) and a short date label."""
 
     def _js(value) -> str:
         # "</" would end the <script> block early, so escape it.
