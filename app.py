@@ -1577,11 +1577,9 @@ elif nav_section == "Performance" and nav_page == "Skinfold Analysis":
                     key="skinfold_date",
                 )
                 day_rows = build_skinfold_rows(
-                    sf_df[sf_df["_date"] == sf_date].rename(columns={"_value": "_sum"}),
-                    sf_player_col,
-                    "_sum",
+                    sf_df, sf_player_col, "_value", "_date", sf_date
                 )
-                if not any(v > 0 for _, v in day_rows):
+                if not any(row[1] > 0 for row in day_rows):
                     st.info("No valid skinfold sums recorded for this date.")
                 else:
                     components.html(
