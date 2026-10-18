@@ -101,7 +101,7 @@ TEAM_LOGOS = {
     "hougang united": "https://assets.football-logos.cc/logos/singapore/512x512/hougang-united.c90f956a.png",
     "brunei dpmm": "https://assets.football-logos.cc/logos/malaysia/512x512/dpmm-fc.6ede0521.png",
     "albirex niigata": "https://assets.football-logos.cc/logos/japan/512x512/albirex-niigata.c76b3101.png",
-    "fc jurong": "https://assets.football-logos.cc/logos/singapore/512x512/fc-jurong.e7e6c333.png",
+    "jurong": "https://assets.football-logos.cc/logos/singapore/512x512/fc-jurong.e7e6c333.png",
     "geylang international": "https://geylang.football/wp-content/uploads/2025/06/GeylangInternationalFC_GIFC_Logo.webp",
     "tanjong pagar united": "https://assets.football-logos.cc/logos/singapore/512x512/tanjong-pagar-united.4c2ca0dc.png",
     "balestier khalsa": "https://assets.football-logos.cc/logos/singapore/512x512/balestier-khalsa.70b455b9.png",
