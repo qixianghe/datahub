@@ -20,6 +20,7 @@ from utils.skinfold_dashboard import (
     build_skinfold_rows,
     find_column,
 )
+from utils.player_overview_dashboard import build_overview_html, build_overview_rows
 import streamlit.components.v1 as components
 
 try:
@@ -649,6 +650,7 @@ NAV_STRUCTURE = {
         ("+", "Add Medical Information"),
         ("✎", "Add/Edit Observations"),
         ("●", "Player Availability"),
+        ("☰", "Player Overview"),
         ("⚠", "Unavailable/Modified Players"),
     ],
 }
@@ -2499,6 +2501,42 @@ elif nav_section == "Medical" and nav_page == "Unavailable/Modified Players":
             st.caption("No unavailable or modified players.")
         for position, player, status in right_entries:
             _render_unavail_card(position, player, status)
+
+elif nav_section == "Medical" and nav_page == "Player Overview":
+    # Compact, phone-friendly availability list (position / player /
+    # availability) with available GK vs outfield counts on top.
+    try:
+        overview_players_df = read_table(PLAYERS_TABLE)
+    except Exception as e:
+        overview_players_df = pd.DataFrame()
+        st.info(
+            f"Could not load the players table yet ({e}). Run "
+            "schema_players.sql in Supabase and add your roster there."
+        )
+
+    overview_team = st.selectbox("Team", TEAMS, key="overview_team")
+    overview_roster = build_roster_dict(overview_players_df).get(overview_team, {})
+
+    try:
+        overview_status = get_current_player_data(overview_team)
+    except Exception as e:
+        overview_status = {}
+        st.info(
+            f"Could not load existing availability yet ({e}). "
+            "Defaulting everyone to 'Available'."
+        )
+
+    overview_rows = build_overview_rows(overview_roster, overview_status, POSITION_ORDER)
+    if not overview_rows:
+        st.info(f"No players found for {overview_team} in the players table yet.")
+    else:
+        components.html(
+            build_overview_html(
+                overview_rows, f"{datetime.now().strftime('%a %d %b %Y')}|{overview_team}"
+            ),
+            height=860,
+            scrolling=True,
+        )
 
 else:  # nav_section == "Medical" and nav_page == "Player Availability"
     # Tightens default Streamlit spacing so a full squad's cards fit
