@@ -117,7 +117,7 @@ TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
   .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
   .pill.good { background: var(--good-tint); color: var(--good); }
   .pill.warn { background: var(--warn-tint); color: var(--warn); }
-  .pill.crit { background: var(--crit-tint); color: var(--crit); }
+  .pill.crit, .pill.caut { background: var(--crit-tint); color: var(--crit); }
   .rule { font-size: .8rem; color: var(--muted); margin: 0; }
 
   .scales { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
@@ -168,7 +168,7 @@ TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
           <tbody id="rows"></tbody>
         </table>
       </div>
-      <p class="rule">Status rule: recovery 3 or below is <b>Low recovery</b>. Recovery 4 to 5 after an RPE of 9 or more is <b>Monitor</b>. Everything else is <b>Good to go</b>.</p>
+      <p class="rule">Status rule: recovery 3 or below is <b>Low recovery</b>. Recovery 4 to 5 after an RPE of 9 or more is <b>Caution</b>. Recovery 4 to 5 at any lower RPE is <b>Monitor</b>. Everything else is <b>Good to go</b>.</p>
     </div>
   </section>
 
@@ -202,11 +202,12 @@ TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
   }
   var STATUS = {
     crit: { text: "Low recovery", sev: 0, color: "var(--crit)" },
-    warn: { text: "Monitor", sev: 1, color: "var(--warn)" },
-    good: { text: "Good to go", sev: 2, color: "var(--good)" }
+    caut: { text: "Caution", sev: 1, color: "var(--crit)" },
+    warn: { text: "Monitor", sev: 2, color: "var(--warn)" },
+    good: { text: "Good to go", sev: 3, color: "var(--good)" }
   };
   data.forEach(function (d) {
-    d.st = d.rec <= 3 ? "crit" : (d.rec <= 5 && d.rpe >= 9 ? "warn" : "good");
+    d.st = d.rec <= 3 ? "crit" : (d.rec <= 5 ? (d.rpe >= 9 ? "caut" : "warn") : "good");
     d.sev = STATUS[d.st].sev;
   });
 
@@ -217,6 +218,7 @@ TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
   var avg = function (k) { return data.reduce(function (s, d) { return s + d[k]; }, 0) / data.length; };
   var avgRpe = avg("rpe"), avgRec = avg("rec");
   var crits = data.filter(function (d) { return d.st === "crit"; });
+  var cauts = data.filter(function (d) { return d.st === "caut"; });
   var warns = data.filter(function (d) { return d.st === "warn"; });
 
   document.getElementById("tiles").innerHTML =
@@ -228,8 +230,10 @@ TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
       '<div class="n">' + label(REC, avgRec).toLowerCase().replace("between", "Between") + '</div></div>' +
     '<div class="tile alert"><div class="k">Low recovery</div><div class="v">' + crits.length + '<small> ' + (crits.length === 1 ? 'athlete' : 'athletes') + '</small></div><div class="n">' +
       (crits.length ? crits.map(function (d) { return esc(d.name) + " (" + fmt(d.rec) + ")"; }).join(", ") : "None") + '</div></div>' +
+    '<div class="tile alert"><div class="k">Caution</div><div class="v">' + cauts.length + '<small> ' + (cauts.length === 1 ? 'athlete' : 'athletes') + '</small></div><div class="n">' +
+      (cauts.length ? cauts.map(function (d) { return esc(d.name) + " (RPE " + fmt(d.rpe) + ", rec " + fmt(d.rec) + ")"; }).join(", ") : "None") + '</div></div>' +
     '<div class="tile"><div class="k">To monitor</div><div class="v">' + warns.length + '<small> ' + (warns.length === 1 ? 'athlete' : 'athletes') + '</small></div><div class="n">' +
-      (warns.length ? warns.map(function (d) { return esc(d.name); }).join(", ") + ' (RPE 9+, recovery 4 to 5)' : "None") + '</div></div>';
+      (warns.length ? warns.map(function (d) { return esc(d.name); }).join(", ") + ' (recovery 4 to 5)' : "None") + '</div></div>';
 
   /* table */
   var sortKey = "rec", sortDir = 1;
@@ -298,7 +302,7 @@ TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
   });
   document.getElementById("chart").innerHTML = s;
   document.getElementById("chart-d").textContent =
-    "Dot colour matches status: red is low recovery, amber is monitor, green is good to go." + (shared.length ? " " + shared.join(" ") : "");
+    "Dot colour matches status: dark red is low recovery or caution, amber is monitor, green is good to go." + (shared.length ? " " + shared.join(" ") : "");
 
   /* scale reference */
   function scaleHtml(title, map) {
@@ -310,6 +314,21 @@ TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8"><meta name="view
   }
   document.getElementById("rpe-scale").innerHTML = scaleHtml("RPE", RPE);
   document.getElementById("rec-scale").innerHTML = scaleHtml("Recovery (Fatigue column)", REC);
+})();
+</script>
+<script>
+/* Resize the embedding iframe to the content height (falls back to the fixed height Streamlit gives it). */
+(function () {
+  function fit() {
+    try {
+      var h = Math.ceil(document.body.getBoundingClientRect().height) + 2;
+      if (window.frameElement) window.frameElement.style.height = h + "px";
+    } catch (e) {}
+  }
+  window.addEventListener("load", fit);
+  window.addEventListener("resize", fit);
+  fit();
+  setTimeout(fit, 400);
 })();
 </script>
 </body></html>'''
