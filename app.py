@@ -21,6 +21,7 @@ from utils.skinfold_dashboard import (
     find_column,
 )
 from utils.player_overview_dashboard import build_overview_html, build_overview_rows
+from utils.gps_match_dashboard_html import build_gps_match_html, build_gps_match_payload
 import streamlit.components.v1 as components
 
 try:
@@ -638,6 +639,7 @@ NAV_STRUCTURE = {
     "Performance": [
         ("↑", "Upload"),
         ("▦", "GPS Match Dashboard"),
+        ("▦", "GPS Match Dashboard ©"),
         ("◐", "Record RPE"),
         ("◑", "View RPE & Fatigue"),
         ("▤", "Match History"),
@@ -941,6 +943,71 @@ elif nav_section == "Performance" and nav_page == "GPS Match Dashboard":
                         overview_df, raw_df=raw, window_labels=window_labels, sort_by="Game Minutes (mins)"
                     )
                 st.caption("Sorted by Game Minutes, highest to lowest. Hover a bar to see the 5 most recent matches.")
+
+elif nav_section == "Performance" and nav_page == "GPS Match Dashboard ©":
+    # HTML version of the GPS Match Dashboard: same data prep and maths as
+    # the original page above (utils/gps_dashboard.py), rendered as one
+    # self-contained page by utils/gps_match_dashboard_html.py.
+    gc_col1, gc_col2 = st.columns([1, 2])
+    with gc_col1:
+        gc_team = st.selectbox("Team", TEAMS, key="gps_c_team")
+
+    try:
+        gc_raw = read_table("gps_session_data")
+    except Exception as e:
+        gc_raw = pd.DataFrame()
+        st.info(f"Could not load gps_session_data yet ({e}).")
+
+    if not gc_raw.empty and "session_type" in gc_raw.columns:
+        gc_raw = gc_raw[(gc_raw["team"] == gc_team) & (gc_raw["session_type"] == "Match")].copy()
+
+    if gc_raw.empty:
+        st.info("No match data uploaded yet for this team. Upload a CSV in the Upload tab with Session Type = Match.")
+    else:
+        gc_raw = gc_raw.rename(
+            columns={k: v for k, v in GPS_DASHBOARD_COLUMN_MAP.items() if k in gc_raw.columns}
+        )
+        gc_missing = [c for c in gpsd.METRIC_COLUMNS + ["Player Name"] if c not in gc_raw.columns]
+        if gc_missing:
+            st.warning(f"Missing expected column(s) for this dashboard: {', '.join(gc_missing)}.")
+        else:
+            for m in gpsd.METRIC_COLUMNS:
+                gc_raw[m] = pd.to_numeric(gc_raw[m], errors="coerce")
+
+            gc_raw, gc_id_cols = gpsd.build_match_labels(gc_raw)
+            gc_order_desc = gpsd.sorted_match_labels(gc_raw, gc_id_cols, descending=True)
+            gc_multi = gc_raw[gpsd.MATCH_LABEL_COL].nunique() > 1
+
+            with gc_col2:
+                if gc_multi:
+                    gc_label = st.selectbox(
+                        "Match (Date + Opposition)", options=gc_order_desc, key="gps_c_match"
+                    )
+                else:
+                    gc_label = gc_raw[gpsd.MATCH_LABEL_COL].iloc[0]
+
+            gc_selected = gc_raw[gc_raw[gpsd.MATCH_LABEL_COL] == gc_label].copy()
+            # Per-minute shading uses the same cut-offs as Match History
+            # (PER_MIN_BANDS above), keyed by this dashboard's column names.
+            gc_band_cols = {
+                "total_distance_m": "Total Distance (m)",
+                "hsr_distance_m": "High Speed Running (m)",
+                "sprint_distance_m": "Sprint Distance (m)",
+                "hi_actions": "High Intensity Actions",
+                "hmld_m": "High Intensity Distance (m)",
+            }
+            gc_bands = {
+                gc_col: (PER_MIN_BANDS[key]["low_upper"], PER_MIN_BANDS[key]["high_lower"])
+                for key, gc_col in gc_band_cols.items()
+            }
+            gc_payload = build_gps_match_payload(
+                gc_selected, gc_raw, gc_order_desc, gc_label, gc_multi, per_min_bands=gc_bands
+            )
+            components.html(
+                build_gps_match_html(gc_payload),
+                height=1500 + 30 * len(gc_payload["players"]),
+                scrolling=True,
+            )
 
 elif nav_section == "Performance" and nav_page == "Record RPE":
     rpe_team = st.selectbox("Team", TEAMS, key="rpe_team")
